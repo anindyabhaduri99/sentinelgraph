@@ -30,8 +30,8 @@ app = FastAPI(title="SentinelGraph Model Gateway")
 # missing "role"), FastAPI rejects it before our code even runs.
 # -----------------------------------------------------------------------
 
-class InvoleRequest(BaseModel):
-    rrole: str            # which agent role is calling: "planner", "analyst", "evaluator", etc.
+class InvokeRequest(BaseModel):
+    role: str            # which agent role is calling: "planner", "analyst", "evaluator", etc.
     system_prompt: str   # the system prompt for that role (caller supplies it)
     user_message: str    # the actual content to send to the model
 
@@ -48,3 +48,54 @@ class InvokeResponse(BaseModel):
 # ChatOpenAI directly.
 # -----------------------------------------------------------------------
 
+@app.post("/invoke", response_model=InvokeResponse)
+def invoke(req: InvokeRequest):
+    # Step 1: look up which provider/model this role maps to.
+    # This is the "Bedrock-style" central routing decision — defined in
+    # router.py, not hardcoded here, so changing the mapping is a one-line
+    # edit in one file, not a hunt through every agent's code.
+
+    try:
+        config=resolve_model(req.role)
+    except ValueError as e:
+        # Unknown role name was passed in -> return a clean 400 error
+        # instead of crashing.
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Step 2: get the actual LangChain client for that provider/model.
+    # get_anthropic_client / get_openai_client (in providers.py) are the
+    # ONLY two functions in this whole codebase that read the API keys.
+
+    if config["provider"]=="anthropic":
+        client=get_anthropic_client(config["model"])
+    elif config["provider"] == "openai":
+        client = get_openai_client(config["model"])
+    else:
+        # Defensive check — should never happen if router.py is correct,
+        # but fail loudly if it does.
+        raise HTTPException(status_code=400, detail=f"Unsupported provider: {config['provider']}")
+ 
+    # Step 3: build the message list in the format LangChain chat models
+    # expect — a list of (role, content) tuples.
+
+    messages=[
+        ("system", req.system_prompt),
+        ("human", req.user_message),
+    ]
+
+    # Step 4: actually call the model. This is the one real network call
+    # to Anthropic/OpenAI in the entire system.
+
+    result=client.invoke(messages)
+
+    # Step 5: return a structured response so callers (and later, our
+    # audit-trail logger) know exactly which provider/model produced
+    # this output — important for debugging and for the audit trail
+    # we'll build in a later phase.
+
+    return InvokeResponse(
+        role=req.role,
+        provider=config["provider"],
+        model=config["model"],
+        content=result.content,
+    )

@@ -1,0 +1,36 @@
+"""
+models.py
+=========
+SQLAlchemy ORM models mapping Python classes to the real Postgres tables
+created in infra/local/init-schemas.sql. Using the ORM rather than raw SQL
+strings gives us type safety and protects against SQL injection by default,
+since SQLAlchemy parameterizes every query it generates.
+"""
+
+from sqlalchemy import Column, String, Boolean, Numeric, TIMESTAMP, func
+from sqlalchemy import declarative_base
+
+Base = declarative_base()
+
+class Ticket(Base):
+    __tablename__ = "tickets"
+    __table_args__ = {"schema" : "ticketing"}
+
+    ticket_id = Column(String(20), primary_key=True)
+    client_id = Column(String(20), nullable=False)
+    subject = Column(String, nullable=False)
+    status = Column(String(20), nullable=False, default="open")
+    sla_breach = Column(Boolean, nullable=False, default=False)
+    created_at = Column(TIMESTAMP, server_default=func.now())
+    updated_at = Column(TIMESTAMP, server_default=func.now())
+
+class Portfolio(Base):
+    __tablename__ = "portfolios"
+    __table_args__ = {"schema" : "ticketing"}
+
+    client_id = Column(String(20), primary_key=True)
+    portfolio_value = Column(Numeric(15, 2), nullable=False)
+    equities_pct = Column(Numeric(4, 3), nullable=False)
+    bonds_pct = Column(Numeric(4, 3), nullable=False)
+    cash_pct = Column(Numeric(4, 3), nullable=False)
+    risk_profile = Column(String(20), nullable=False)
