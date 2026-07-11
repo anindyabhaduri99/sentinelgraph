@@ -1,0 +1,15 @@
+# Prometheus scrape configuration — polls each service's /metrics endpoint
+# on a fixed interval and stores the time-series data. This is what lets
+# Grafana later query "how did latency change over the last hour" rather
+# than just seeing a single point-in-time snapshot.
+global:
+  scrape_interval: 10s
+
+scrape_configs:
+  - job_name: 'model-gateway'
+    static_configs:
+      - targets: ['model-gateway:8080']
+
+  - job_name: 'orchestrator'
+    static_configs:
+      - targets: ['orchestrator:8090']

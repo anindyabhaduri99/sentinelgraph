@@ -3,3 +3,10 @@ uvicorn==0.32.1
 langchain-anthropic==0.3.0
 langchain-openai==0.2.9
 pydantic==2.9.2
+pyyaml==6.0.2
+sqlalchemy==2.0.36
+psycopg2-binary==2.9.10
+pyyaml==6.0.2
+langsmith==0.1.147
+prometheus-fastapi-instrumentator==7.0.0
+pyjwt==2.9.0

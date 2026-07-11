@@ -12,12 +12,17 @@ import httpx
 
 MODEL_GATEWAY_URL = os.environ.get("MODEL_GATEWAY_URL", "http://model-gateway:8080")
 
-async def call_model(role: str, system_prompt: str, user_message: str) -> str:
+async def call_model(role: str, system_prompt: str, user_message: str, access_token: str = None) -> str:
+
     """
     Async POST to the model gateway's /invoke endpoint. Returns just the
     text content. Raises on non-2xx response so the calling node can
     decide how to handle failure (retry, escalate, etc.).
     """
+
+    headers = {}
+    if access_token:
+        headers["Authorization"] = f"Bearer {access_token}"
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(
@@ -27,6 +32,7 @@ async def call_model(role: str, system_prompt: str, user_message: str) -> str:
                 "system_prompt" : system_prompt,
                 "user_message" : user_message,
             },
+            headers=headers,
         )
 
         response.raise_for_status()

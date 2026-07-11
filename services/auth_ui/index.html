@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>SentinelGraph — Sign Up / Sign In</title>
+  <style>
+    body {
+      font-family: -apple-system, sans-serif;
+      background: #0d1117;
+      color: #e6edf3;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+    }
+    .card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 10px;
+      padding: 32px;
+      width: 360px;
+    }
+    h2 { margin-top: 0; font-size: 18px; }
+    .tabs { display: flex; margin-bottom: 20px; border-bottom: 1px solid #30363d; }
+    .tab {
+      flex: 1;
+      text-align: center;
+      padding: 10px;
+      cursor: pointer;
+      color: #8b949e;
+      border-bottom: 2px solid transparent;
+    }
+    .tab.active { color: #e6edf3; border-bottom: 2px solid #1f6feb; }
+    input, select {
+      width: 100%;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      color: #e6edf3;
+      padding: 10px;
+      margin-bottom: 12px;
+      font-size: 14px;
+      box-sizing: border-box;
+    }
+    button {
+      width: 100%;
+      background: #238636;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      padding: 12px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    #message { margin-top: 12px; font-size: 13px; }
+    .error { color: #f85149; }
+    .success { color: #3fb950; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="tabs">
+      <div class="tab active" id="tab-login" onclick="switchTab('login')">Sign In</div>
+      <div class="tab" id="tab-register" onclick="switchTab('register')">Sign Up</div>
+    </div>
+
+    <div id="login-form">
+      <h2>Sign In</h2>
+      <input type="text" id="login-user-id" placeholder="User ID">
+      <input type="password" id="login-password" placeholder="Password">
+      <button onclick="login()">Sign In</button>
+    </div>
+
+    <div id="register-form" class="hidden">
+      <h2>Sign Up</h2>
+      <input type="text" id="reg-user-id" placeholder="User ID">
+      <input type="email" id="reg-email" placeholder="Email address">
+      <input type="password" id="reg-password" placeholder="Password">
+      <input type="password" id="reg-confirm-password" placeholder="Confirm password">
+      <select id="reg-role">
+        <option value="">Select role</option>
+        <option value="admin">Admin</option>
+        <option value="portfolio_manager">Portfolio Manager</option>
+        <option value="ops">Ops</option>
+        <option value="external_client">External Client</option>
+        <option value="risk_analyst">Risk Analyst</option>
+      </select>
+      <button onclick="register()">Sign Up</button>
+    </div>
+
+    <div id="message"></div>
+  </div>
+
+  <script>
+    const IDENTITY_URL = "http://localhost:8110";
+
+    function switchTab(tab) {
+      document.getElementById("login-form").classList.toggle("hidden", tab !== "login");
+      document.getElementById("register-form").classList.toggle("hidden", tab !== "register");
+      document.getElementById("tab-login").classList.toggle("active", tab === "login");
+      document.getElementById("tab-register").classList.toggle("active", tab === "register");
+      document.getElementById("message").textContent = "";
+    }
+
+    function showMessage(text, isError) {
+      const el = document.getElementById("message");
+      el.textContent = text;
+      el.className = isError ? "error" : "success";
+    }
+
+    async function register() {
+      const body = {
+        user_id: document.getElementById("reg-user-id").value,
+        email: document.getElementById("reg-email").value,
+        password: document.getElementById("reg-password").value,
+        confirm_password: document.getElementById("reg-confirm-password").value,
+        role: document.getElementById("reg-role").value,
+      };
+
+      try {
+        const res = await fetch(`${IDENTITY_URL}/register`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Registration failed");
+        showMessage("Account created — you can now sign in.", false);
+        switchTab("login");
+      } catch (err) {
+        showMessage(err.message, true);
+      }
+    }
+
+    async function login() {
+      const body = {
+        user_id: document.getElementById("login-user-id").value,
+        password: document.getElementById("login-password").value,
+      };
+
+      try {
+        const res = await fetch(`${IDENTITY_URL}/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Login failed");
+
+        // NOTE: localStorage is used here for local-dev simplicity only.
+        // Production hardening would move the refresh token to an
+        // httpOnly cookie, inaccessible to JavaScript, to reduce XSS risk.
+        localStorage.setItem("access_token", data.access_token);
+        localStorage.setItem("refresh_token", data.refresh_token);
+        localStorage.setItem("role", data.role);
+
+        showMessage(`Signed in as ${body.user_id} (${data.role})`, false);
+      } catch (err) {
+        showMessage(err.message, true);
+      }
+    }
+
+    async function login() {
+  const body = {
+    user_id: document.getElementById("login-user-id").value,
+    password: document.getElementById("login-password").value,
+  };
+
+  try {
+    const res = await fetch(`${IDENTITY_URL}/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Login failed");
+
+    const params = new URLSearchParams({
+      access_token: data.access_token,
+      refresh_token: data.refresh_token,
+      role: data.role,
+      user_id: body.user_id,
+    });
+    window.location.href = `http://localhost:3001?${params.toString()}`;
+  } catch (err) {
+    showMessage(err.message, true);
+  }
+}
+  </script>
+</body>
+</html>

@@ -1,7 +1,8 @@
 from typing import TypedDict, Optional
 
 class AgentState(TypedDict):
-    user_mesage: str
+    user_message: str
+    access_token: str
     plan: Optional[str]
     retrieved_context: Optional[str]
     draft_response: Optional[str]

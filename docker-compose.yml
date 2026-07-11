@@ -51,8 +51,100 @@ services:
     container_name: sentinelgraph-model-gateway
     restart: unless-stopped
     env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY}
+      LANGSMITH_TRACING: ${LANGSMITH_TRACING}
+      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT}
+      LANGCHAIN_TRACING_V2: ${LANGCHAIN_TRACING_V2}
+      LANGCHAIN_API_KEY: ${LANGCHAIN_API_KEY}
+      LANGCHAIN_PROJECT: ${LANGCHAIN_PROJECT}
+      JWT_SECRET: ${JWT_SECRET}
     ports:
       - "8080:8080"
+    depends_on:
+      - postgres
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: services/orchestrator/Dockerfile
+    container_name: sentinelgraph-orchestrator
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MODEL_GATEWAY_URL: http://model-gateway:8080
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY}
+      LANGSMITH_TRACING: ${LANGSMITH_TRACING}
+      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT}
+      LANGCHAIN_TRACING_V2: ${LANGCHAIN_TRACING_V2}
+      LANGCHAIN_API_KEY: ${LANGCHAIN_API_KEY}
+      LANGCHAIN_PROJECT: ${LANGCHAIN_PROJECT}
+    ports:
+      - "8090:8090"
+    depends_on:
+      - model-gateway
+      - postgres
+
+  dashboard:
+    build: ./services/dashboard
+    container_name: sentinelgraph-dashboard
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+
+  chat-ui:
+    build: ./services/chat_ui
+    container_name: sentinelgraph-chat-ui
+    restart: unless-stopped
+    ports:
+      - "3001:80"
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: sentinelgraph-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./infra/local/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    depends_on:
+      - model-gateway
+      - orchestrator
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: sentinelgraph-grafana
+    restart: unless-stopped
+    ports:
+      - "3002:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    depends_on:
+      - prometheus
+
+  identity:
+    build: ./services/identity
+    container_name: sentinelgraph-identity
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+    ports:
+      - "8110:8100"
+    depends_on:
+      - postgres
+
+  auth-ui:
+    build: ./services/auth_ui
+    container_name: sentinelgraph-auth-ui
+    restart: unless-stopped
+    ports:
+      - "3003:80"
 
 volumes:
   postgres_data:

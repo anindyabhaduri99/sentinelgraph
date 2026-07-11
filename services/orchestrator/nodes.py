@@ -15,7 +15,7 @@ from itertools import combinations_with_replacement
 import sys
 import os
 
-sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..", "shared", "prompts"))
+sys.path.append(os.path.join(os.path.dirname(__file__), "shared", "prompts"))
 
 from state import AgentState
 from gateway_client import call_model
@@ -31,11 +31,13 @@ def _wrap(content) -> str:
 # -----------------------------------------------------------------------
 
 async def planner_node(state: AgentState) -> dict:
+   
     system_prompt = load_prompt("planner")
     plan = await call_model(
         role="planner",
         system_prompt=system_prompt,
         user_message=_wrap(state["user_message"]),
+        access_token=state["access_token"],
     )
 
     return {"plan": plan}
@@ -72,6 +74,7 @@ async def analyst_node(state: AgentState) -> dict:
         role="analyst",
         system_prompt=system_prompt,
         user_message=combined_input,
+        access_token=state["access_token"],
     )
 
     return {"draft_response": draft}
@@ -90,6 +93,7 @@ async def evaluator_node(state: AgentState) -> dict:
         role="evaluator",
         system_prompt=system_prompt,
         user_message=combined_input,
+        access_token=state["access_token"],
     )
 
     try:
@@ -115,6 +119,7 @@ async def optimizer_node(state: AgentState) -> dict:
         role="optimizer",
         system_prompt=system_prompt,
         user_message=combined_input,
+        access_token=state["access_token"],
     )
     return {
         "plan" : improved_instructions,

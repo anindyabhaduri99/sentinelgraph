@@ -8,7 +8,7 @@ since SQLAlchemy parameterizes every query it generates.
 """
 
 from sqlalchemy import Column, String, Boolean, Numeric, TIMESTAMP, func
-from sqlalchemy import declarative_base
+from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
 

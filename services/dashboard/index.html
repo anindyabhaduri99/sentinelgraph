@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>SentinelGraph — Usage Dashboard</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; background: #0d1117; color: #e6edf3; padding: 40px; }
+    h1 { font-size: 22px; margin-bottom: 4px; }
+    .subtitle { color: #8b949e; margin-bottom: 32px; font-size: 14px; }
+    .cards { display: flex; gap: 20px; margin-bottom: 32px; }
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; flex: 1; }
+    .card .label { color: #8b949e; font-size: 13px; margin-bottom: 6px; }
+    .card .value { font-size: 28px; font-weight: 600; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 32px; }
+    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #30363d; font-size: 14px; }
+    th { color: #8b949e; font-weight: 500; }
+    .section-title { font-size: 16px; margin-bottom: 12px; }
+    #error { color: #f85149; }
+  </style>
+</head>
+<body>
+  <h1>SentinelGraph — Model Gateway Usage</h1>
+  <div class="subtitle">Live token usage and cost, read directly from observability.token_usage</div>
+
+  <div class="cards">
+    <div class="card">
+      <div class="label">Total Cost (USD)</div>
+      <div class="value" id="total-cost">—</div>
+    </div>
+    <div class="card">
+      <div class="label">Total Calls</div>
+      <div class="value" id="total-calls">—</div>
+    </div>
+  </div>
+
+  <div class="section-title">By Role</div>
+  <table id="by-role-table">
+    <thead><tr><th>Role</th><th>Cost (USD)</th><th>Calls</th></tr></thead>
+    <tbody></tbody>
+  </table>
+
+  <div class="section-title">By Provider</div>
+  <table id="by-provider-table">
+    <thead><tr><th>Provider</th><th>Cost (USD)</th><th>Calls</th></tr></thead>
+    <tbody></tbody>
+  </table>
+
+  <div id="error"></div>
+
+  <script>
+    const GATEWAY_URL = "http://localhost:8080";
+
+    async function loadUsage() {
+      try {
+        const res = await fetch(`${GATEWAY_URL}/usage`);
+        if (!res.ok) throw new Error(`Gateway returned ${res.status}`);
+        const data = await res.json();
+
+        document.getElementById("total-cost").textContent = `$${data.total_cost_usd.toFixed(6)}`;
+        document.getElementById("total-calls").textContent = data.total_calls;
+
+        const roleBody = document.querySelector("#by-role-table tbody");
+        roleBody.innerHTML = data.by_role.map(r =>
+          `<tr><td>${r.role}</td><td>$${r.cost_usd.toFixed(6)}</td><td>${r.calls}</td></tr>`
+        ).join("");
+
+        const providerBody = document.querySelector("#by-provider-table tbody");
+        providerBody.innerHTML = data.by_provider.map(p =>
+          `<tr><td>${p.provider}</td><td>$${p.cost_usd.toFixed(6)}</td><td>${p.calls}</td></tr>`
+        ).join("");
+
+        document.getElementById("error").textContent = "";
+      } catch (err) {
+        document.getElementById("error").textContent = `Failed to load usage data: ${err.message}`;
+      }
+    }
+
+    loadUsage();
+    setInterval(loadUsage, 5000); // refresh every 5 seconds
+  </script>
+</body>
+</html>

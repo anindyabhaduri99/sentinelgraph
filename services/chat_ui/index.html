@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>SentinelGraph — Chat</title>
+  <style>
+    body {
+      font-family: -apple-system, sans-serif;
+      background: #0d1117;
+      color: #e6edf3;
+      margin: 0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      padding: 16px 24px;
+      border-bottom: 1px solid #30363d;
+      font-size: 16px;
+      font-weight: 600;
+    }
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .message {
+      max-width: 70%;
+      padding: 12px 16px;
+      border-radius: 12px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+    }
+    .user {
+      align-self: flex-end;
+      background: #1f6feb;
+      color: white;
+    }
+    .assistant {
+      align-self: flex-start;
+      background: #161b22;
+      border: 1px solid #30363d;
+    }
+    .meta {
+      font-size: 11px;
+      color: #8b949e;
+      margin-top: 6px;
+    }
+    .escalated {
+      color: #f0883e;
+      font-weight: 600;
+    }
+    #input-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 16px 24px;
+      border-top: 1px solid #30363d;
+    }
+    #upload-icon {
+      font-size: 20px;
+      opacity: 0.35;
+      cursor: not-allowed;
+      user-select: none;
+    }
+    #user-input {
+      flex: 1;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      color: #e6edf3;
+      padding: 12px 14px;
+      font-size: 14px;
+      resize: none;
+    }
+    #send-btn {
+      background: #238636;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      padding: 12px 20px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    #send-btn:disabled {
+      background: #30363d;
+      cursor: not-allowed;
+    }
+    .loading {
+      color: #8b949e;
+      font-style: italic;
+    }
+  </style>
+</head>
+<body>
+    <header style="display: flex; justify-content: space-between; align-items: center;">
+        <span>SentinelGraph — Chat</span>
+        <span style="font-size: 13px; color: #8b949e;">
+          <span id="user-label"></span>
+          <button id="logout-btn" style="margin-left: 12px; background: #21262d; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px;">Log out</button>
+        </span>
+      </header>
+  <div id="messages"></div>
+  <div id="input-bar">
+    <span id="upload-icon" title="Document upload — coming in Phase 10 (MinIO ingestion)">📎</span>
+    <textarea id="user-input" rows="1" placeholder="Ask about a ticket or portfolio..."></textarea>
+    <button id="send-btn">Send</button>
+  </div>
+
+  <script>
+    // On load: pull token/role from URL params (first visit after login redirect),
+    // store them, then clean the URL so tokens don't linger in browser history.
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.has("access_token")) {
+    localStorage.setItem("access_token", urlParams.get("access_token"));
+    localStorage.setItem("refresh_token", urlParams.get("refresh_token"));
+    localStorage.setItem("role", urlParams.get("role"));
+    localStorage.setItem("user_id", urlParams.get("user_id"));
+    window.history.replaceState({}, document.title, window.location.pathname);
+    }
+
+    const userLabel = document.getElementById("user-label");
+    const storedUserId = localStorage.getItem("user_id");
+    const storedRole = localStorage.getItem("role");
+    if (storedUserId) {
+    userLabel.textContent = `${storedUserId} (${storedRole})`;
+    } else {
+    userLabel.textContent = "Not signed in";
+    }
+
+    document.getElementById("logout-btn").addEventListener("click", () => {
+    localStorage.clear();
+    window.location.href = "http://localhost:3003";
+    });
+    const ORCHESTRATOR_URL = "http://localhost:8090";
+    const messagesEl = document.getElementById("messages");
+    const inputEl = document.getElementById("user-input");
+    const sendBtn = document.getElementById("send-btn");
+
+    function appendMessage(role, text, meta) {
+      const div = document.createElement("div");
+      div.className = `message ${role}`;
+      div.textContent = text;
+      if (meta) {
+        const metaDiv = document.createElement("div");
+        metaDiv.className = meta.escalated ? "meta escalated" : "meta";
+        metaDiv.textContent = meta.escalated
+          ? `⚠ Escalated to human review — confidence ${meta.confidence}`
+          : `confidence ${meta.confidence} · ${meta.retries} retr${meta.retries === 1 ? "y" : "ies"}`;
+        div.appendChild(metaDiv);
+      }
+      messagesEl.appendChild(div);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+      return div;
+    }
+
+    async function sendMessage() {
+  const text = inputEl.value.trim();
+  if (!text) return;
+
+  appendMessage("user", text);
+  inputEl.value = "";
+  sendBtn.disabled = true;
+
+  const loadingDiv = appendMessage("assistant", "Thinking...");
+  loadingDiv.classList.add("loading");
+
+  try {
+    const res = await fetch(`${ORCHESTRATOR_URL}/chat`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${localStorage.getItem("access_token")}`,
+      },
+      body: JSON.stringify({ user_message: text }),
+    });
+    if (!res.ok) throw new Error(`Server returned ${res.status}`);
+    const data = await res.json();
+
+    loadingDiv.remove();
+    appendMessage("assistant", data.final_response, {
+      confidence: data.confidence_score,
+      retries: data.retry_count,
+      escalated: data.escalated_to_human,
+    });
+  } catch (err) {
+    loadingDiv.remove();
+    appendMessage("assistant", `Error: ${err.message}`);
+  } finally {
+    sendBtn.disabled = false;
+  }
+}
+
+    sendBtn.addEventListener("click", sendMessage);
+    inputEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+  </script>
+</body>
+</html>
