@@ -419,6 +419,51 @@ flowchart TD
     style Result fill:#d4edda
 ```
 
+## Phase 6.5 and 6.6: Intent Classification and a Real, Corrected Human-in-the-Loop Approval Queue
+
+These two phases were built together, and it is worth explaining precisely why, since the design went through a genuine, instructive correction mid-build rather than arriving at the right answer on the first attempt. Phase 6.5 adds a new node, `intent_classifier_node`, positioned after tool filtering and before the planner, whose job is to classify every incoming message into one of three categories: `read_only`, `write_action`, or `mixed`. This directly operationalizes a compliance requirement established all the way back in Phase 2's synthetic compliance policy document — that any AI-assisted action changing data or executing a transaction requires mandatory human review before anything is committed. Classification itself is a lightweight LLM call through the same Model Gateway used everywhere else, using a dedicated `intent_classifier` role routed to a fast, inexpensive model, with one deliberate safety property worth stating precisely: if the model's output doesn't cleanly match one of the three expected labels — due to unexpected phrasing, extra words, or any parsing ambiguity — the classification defaults to `mixed` rather than the more permissive `read_only`. This is a conservative fail-safe: an ambiguous classification should be treated with the stricter caution reserved for write actions, not silently assumed harmless.
+
+### The Design Correction: Draft-Then-Approve, Not Refuse-to-Engage
+
+The first version of this phase's write/mixed handling was built as a full short-circuit: a new conditional edge immediately after intent classification routed write and mixed requests straight to `finalize_node`, completely bypassing the planner, retriever, analyst, and evaluator, and returning a static message stating the request required human review. Testing this revealed a real, substantive problem rather than a coding bug: this pattern discarded legitimate reasoning the agent was fully capable of performing. A user asking to update a portfolio allocation deserves a system that actually retrieves their current allocation, reasons about what the requested change would mean, and prepares a genuine, well-grounded draft response — not a system that refuses to engage with the substance of the request at all merely because it happens to be a write action. This is not how real human-in-the-loop systems are meant to operate in production, and building it the blunt way here would have been presenting an incorrect pattern as if it were the correct one, which is precisely the kind of gap a sharp interviewer probes for.
+
+The corrected design removes that early short-circuit entirely, so intent classification flows straight through to the planner exactly as any other request would, and the full pipeline — planner, retriever, analyst, evaluator — runs normally and produces a real, complete draft response. The interception now happens only at the very last step, inside `finalize_node`: if the classified intent is `write_action` or `mixed`, the node does not return the draft as the final answer directly to the user; instead, it persists the draft into a new table, `identity.pending_approvals`, marks it `pending`, and returns a response explaining that a draft has been prepared and is now awaiting human approval before anything is executed. This is a meaningfully different and more correct pattern: draft first, using the agent's full reasoning capability, then hold for approval — not refuse to reason at all.
+
+### The Approval Queue, a Real Reviewer UI, and the Honest Gap in Execution
+
+`identity.pending_approvals` stores each write/mixed request's original text, the full draft response, the requesting user's role, a status field, and reviewer/timestamp fields populated once a decision is made. Two new endpoints, protected by the identical DAL pattern used everywhere else in this project, expose this queue: `GET /approvals`, gated to a new `approval_queue`/`read` entitlement granted to `admin` and `ops`, lists everything currently pending; `POST /approvals/{id}/decide`, gated to the corresponding `write` entitlement, lets a reviewer approve or reject. A dedicated, small standalone UI was built for this — a fourth static frontend in this project, following the identical pattern established by the chat and auth interfaces — displaying each pending item as a card with the original request, the full draft, and Approve/Reject buttons wired directly to the real endpoint. A conditional link to this approvals UI was added to the chat interface's own header, visible only when the logged-in user's role is `admin` or `ops`, carrying the access token forward through the same URL-parameter handoff pattern already used between the auth and chat UIs — a small, concrete example of entitlement-aware UI behavior, where the interface itself reflects what a given role is authorized to do, not just the backend.
+
+Testing the full loop end to end — submitting a write-action request through the chat UI, watching a real draft appear in the approvals dashboard with the correct requester and timestamp, and clicking Approve — surfaced one further honest gap worth stating plainly rather than glossing over: the first working version of `decide_approval` only updated the row's status to `approved`; it never actually invoked the real write-capable tool, `update_portfolio_allocation`, meaning nothing was genuinely executed on approval at all. This was caught and corrected, though with an explicitly named, temporary limitation of its own: since the planner does not yet produce structured, machine-actionable parameters (that remains the still-deferred piece from Phase 3's original design decision, now the very next priority), a small regex-based extractor pulls a target percentage directly out of the original free-text request in order to call the real update function. This is deliberately flagged as temporary scaffolding, not a finished design — the correct fix, prioritized as the immediate next piece of work, is for the planner to be upgraded to genuine structured output validated against a tool schema, at which point approval-triggered execution can call the selected tool with real, validated parameters instead of parsing free text after the fact.
+
+### A Deliberate, Time-Boxed Reprioritization
+
+With the interview a small number of days away, a deliberate decision was made at this point to stop further polishing of the HITL/approval mechanism — the current state (real draft, real persisted queue, real role-gated reviewer UI, real approval-triggered execution via a temporary text-parsing bridge) is sufficient to demonstrate the concept convincingly, and further refinement here has lower marginal value than the remaining priorities. The remaining build time was explicitly reordered around what maps most directly to the JD's stated requirements: structured planner output that actually selects from the tool registry rather than producing free text, a dynamic retriever that dispatches based on that structured selection alongside real Chroma-backed RAG, short and long-term conversation memory with vector database integration, and EKS deployment carried to full depth. Remaining lower-priority items — further guardrail layers, the caching architecture, MinIO ingestion, exhaustive testing, and the full Well-Architected pillar documentation beyond what is needed to discuss it — were deliberately downgraded to design-level discussion rather than full implementation, a conscious trade-off given the fixed time remaining, not an oversight.
+
+**Corrected write-action flow, draft-then-approve:**
+
+```mermaid
+flowchart TD
+    Start([POST /chat]) --> Filter[filter_tools_node]
+    Filter --> Intent[intent_classifier_node<br/>read_only / write_action / mixed]
+    Intent --> Planner[planner_node]
+    Planner --> Retriever[retriever_node]
+    Retriever --> Analyst[analyst_node<br/>produces a REAL, complete draft<br/>regardless of intent]
+    Analyst --> Evaluator[evaluator_node]
+    Evaluator --> Finalize{finalize_node}
+
+    Finalize -->|intent = read_only| Return[Return draft directly to user]
+    Finalize -->|intent = write_action or mixed| Queue["INSERT into identity.pending_approvals<br/>status = 'pending'<br/>User told: draft prepared, awaiting approval"]
+
+    Queue --> ReviewerUI[Approvals UI<br/>admin/ops only, entitlement-gated]
+    ReviewerUI -->|Approve| Execute["update_portfolio_allocation()<br/>REAL write, via temporary regex-parsed params<br/>— honest gap, pending structured planner output"]
+    ReviewerUI -->|Reject| Closed[status = 'rejected', nothing executed]
+
+    style Analyst fill:#e1f0ff
+    style Queue fill:#fff3cd
+    style Execute fill:#f8d7da
+    style ReviewerUI fill:#d4edda
+```
+
 ## Build Phases
 
 - [x] Phase 0: Repository bootstrap, folder architecture, git branching/commit conventions, secrets strategy (`.env` / `.env.example`)
@@ -434,26 +479,27 @@ flowchart TD
 - [x] Phase 5: Entitlements & Data Access Layer — role-based `identity.entitlements` table, deterministic DAL gatekeeper (no LLM involvement), `role` threaded through `AgentState`, and a dedicated graph short-circuit so access-denial skips the analyst/evaluator/optimizer loop entirely rather than being treated as a retriable quality issue
 - [x] Phase 6a: Agent/Tool Registry — real `identity.tool_registry` catalog (name, description, JSON input schema, resource, owning domain, enabled flag) sharing the same resource vocabulary as `identity.entitlements`; registration endpoint reuses the Phase 5 DAL pattern (admin-only, JWT-verified, entitlement-enforced) rather than a bespoke check; planner tool-selection and dynamic retriever wiring intentionally deferred to Phase 6b
 - [x] Phase 6b: Filtering/Access-Control Node — new `filter_tools_node`, graph entry point running before the planner, cross-checks the Phase 6a registry against Phase 5 entitlements per-role using the boolean `check_entitlement` (not the enforcing version), recomputed fresh every turn with no caching; testing surfaced a genuine entitlement seed-data gap (`market_data` granted to no role at all, correctly excluded even for admin) rather than a filtering bug
-- [ ] Phase 6.5: Intent classifier — read-only vs. write-action vs. mixed, drives guardrail strictness and entitlement scope
-- [ ] Phase 7: Guardrails — input / tool-call / output, three distinct layers, intent-aware strictness
-- [ ] Phase 7.5: Error taxonomy and structured error handling feeding audit/guardrails
-- [ ] Phase 7.6: Rate limiting/quotas per user/role, circuit breakers, retries with exponential backoff, graceful degradation
-- [ ] Phase 7.7: Tool invocation security — strongly typed Pydantic schemas, input validation, idempotency keys, sandboxing
-- [ ] Phase 8: Vector DB/RAG (Chroma) — reranking, query rewriting, agentic retrieval
-- [ ] Phase 9: Conversation memory embedding — short-term and long-term, entity memory, TTL/retention
-- [ ] Phase 9.5: Caching layer — node-level, tool-result, semantic/embedding cache; cache key strategy, TTL, invalidation, hit-rate monitoring
-- [ ] Phase 10: MinIO document ingestion pipeline
-- [ ] Phase 11: MinIO immutable audit trail writer
-- [ ] Phase 11.5: Explainability — reasoning-trace logging per agent decision
-- [ ] Phase 11.6: Data retention and privacy — PII detection/redaction, right-to-be-forgotten, retention enforcement
-- [ ] Phase 12.5: Audit Dashboard — reads MinIO + Postgres, search/replay/export for compliance
-- [ ] Phase 13: UI — registration + login, password policy, account lockout, MFA/TOTP, JWT session handling (deferred until Phase 4 exists)
-- [ ] Phase 14: UI — document upload wired to MinIO, conversation history viewer with regenerate/branch/explain-decision, role-aware UI, accessibility (deferred until Phase 10 exists)
-- [ ] Phase 15: Unit + integration tests for orchestrator/gateway/DAL
-- [ ] Phase 15.5: Adversarial/prompt-injection test suite, golden-dataset regression tests
-- [ ] Phase 15.6: SAST/DAST/dependency scanning, load testing, compliance/audit validation tests, chaos engineering
-- [ ] Phase 16: Documentation — ADRs, NFR evaluation table per component, incident response runbooks
-- [ ] Phase 17: AWS cost explorer + $10 spend alarm + teardown script (built before any AWS spend)
-- [ ] Phase 18: Terraform IaC — EKS, IRSA, ECR, VPC endpoints, WAF, multi-env promotion gates
-- [ ] Phase 19: CI/CD pipeline — blue-green/canary deploy, automated rollback, drift detection
-- [ ] Phase 20: Final EKS deployment, validation, and teardown
+- [x] Phase 6.5: Intent classifier — `intent_classifier_node` (read_only/write_action/mixed, ambiguous results default to the stricter `mixed`), corrected mid-build from an early full short-circuit to the proper draft-then-approve pattern
+- [x] Phase 6.6: HITL Approval Queue — real `identity.pending_approvals` table, entitlement-gated `/approvals` + `/approvals/{id}/decide` endpoints, dedicated role-gated reviewer UI, approval-triggered execution of the real `update_portfolio_allocation` write tool (via an explicitly temporary regex-based parameter extractor, pending structured planner output)
+- [ ] **[REPRIORITIZED — interview-timeline decision]** Structured planner output selecting from the tool registry (replaces free-text advisory planning) — NEXT
+- [ ] **[REPRIORITIZED]** Dynamic tool-call dispatch in the retriever + real Chroma-backed RAG
+- [ ] **[REPRIORITIZED]** Short/long-term conversation memory with vector DB integration
+- [ ] **[REPRIORITIZED]** EKS deployment, full depth (unchanged from original scope)
+- [ ] Everything else (further guardrails, caching, MinIO ingestion, exhaustive testing, remaining Well-Architected pillars, KG) — downgraded to design-level discussion only, not built, given interview timeline
+- [ ] *(design-discussion only, not built)* Phase 7: Guardrails — input / tool-call / output, three distinct layers, intent-aware strictness
+- [ ] *(design-discussion only, not built)* Phase 7.5: Error taxonomy and structured error handling feeding audit/guardrails
+- [ ] *(design-discussion only, not built)* Phase 7.6: Rate limiting/quotas per user/role, circuit breakers, retries with exponential backoff, graceful degradation
+- [ ] *(design-discussion only, not built)* Phase 7.7: Tool invocation security — strongly typed Pydantic schemas, input validation, idempotency keys, sandboxing
+- [ ] *(superseded by REPRIORITIZED items above — RAG portion will be built)* Phase 8: Vector DB/RAG (Chroma) — reranking, query rewriting, agentic retrieval
+- [ ] *(superseded by REPRIORITIZED items above — memory portion will be built)* Phase 9: Conversation memory embedding — short-term and long-term, entity memory, TTL/retention
+- [ ] *(design-discussion only, not built)* Phase 9.5: Caching layer — node-level, tool-result, semantic/embedding cache; cache key strategy, TTL, invalidation, hit-rate monitoring
+- [ ] *(design-discussion only, not built)* Phase 10: MinIO document ingestion pipeline
+- [ ] *(design-discussion only, not built)* Phase 11: MinIO immutable audit trail writer
+- [ ] *(design-discussion only, not built)* Phase 11.5: Explainability — reasoning-trace logging per agent decision
+- [ ] *(design-discussion only, not built)* Phase 11.6: Data retention and privacy — PII detection/redaction, right-to-be-forgotten, retention enforcement
+- [ ] *(design-discussion only, not built)* Phase 12.5: Audit Dashboard — reads MinIO + Postgres, search/replay/export for compliance
+- [ ] *(design-discussion only, not built)* Phase 13: UI — registration + login, password policy, account lockout, MFA/TOTP, JWT session handling
+- [ ] *(design-discussion only, not built)* Phase 14: UI — document upload wired to MinIO, conversation history viewer, role-aware UI, accessibility
+- [ ] *(design-discussion only, not built)* Phase 15/15.5/15.6: Testing — unit/integration, adversarial/prompt-injection, SAST/DAST, load testing, chaos engineering
+- [ ] *(design-discussion only, not built)* Phase 16: Documentation — ADRs, NFR evaluation table, incident response runbooks
+- [ ] *(superseded by REPRIORITIZED items above — will be built, full depth)* Phase 17/18/19/20: AWS cost explorer + teardown script, Terraform IaC (EKS/IRSA/VPC/ALB/API Gateway/KMS), CI/CD, final deployment
