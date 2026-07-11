@@ -336,6 +336,51 @@ flowchart TD
     style Finalize fill:#d4edda
 ```
 
+## Phase 6a: Agent/Tool Registry — A Federated Catalog, Not Yet a Smart Planner
+
+This phase builds the foundation for something the system has entirely lacked up to this point: an actual, queryable catalog of what capabilities exist. Every prior phase's retriever has been calling exactly two hardcoded Python functions with no concept of "tools" as a first-class thing at all. This phase is modeled directly on BlackRock's real Aladdin Copilot architecture, described in the ZenML case study used throughout this project's preparation: a federated Plugin Registry, where individual domain teams register their own agents and tools into one shared catalog rather than a single central team hand-building every capability the platform will ever need. It is important to state precisely what this phase does and does not accomplish, since it would be easy to overstate: this phase builds the catalog and a real mechanism for adding to it. It does not yet make the planner intelligent enough to choose from that catalog, and it does not make the retriever dynamically call whatever is registered — both of those are Phase 6b's job, layered on top of this foundation, and deliberately not attempted here, consistent with the earlier decision not to fake structured tool-selection before there was a real registry to select from.
+
+### The Catalog Table, and Reusing the Entitlement Vocabulary Deliberately
+
+A new table, `identity.tool_registry`, stores one row per registered tool: a unique `tool_name`, a `description` written in plain language for an LLM to later read and judge relevance from, an `input_schema` stored as JSONB describing the tool's expected parameters in a format compatible with standard JSON Schema, a `resource` field, an `owning_domain` naming which team registered it, and an `enabled` flag allowing a tool to be turned off without deleting its row entirely — useful for a tool that needs temporary suspension without losing its registration history. Two tools were seeded for real, corresponding to the two capabilities that already exist in this system: `get_ticket` and `get_portfolio`.
+
+A specific and deliberate design decision, discussed explicitly before building this table, was that the `resource` column in this new registry reuses the exact same vocabulary already established in `identity.entitlements` back in Phase 5 — `ticket`, `portfolio`, and so on — rather than inventing a second, parallel naming scheme. The reasoning is that the registry and the entitlement table are two genuinely distinct concerns that must connect cleanly at runtime rather than be merged into one table: the registry answers "what tools exist and what do they do," a question with an answer that is true regardless of who is asking, while the entitlement table answers "is this specific role allowed to use this specific tool," which depends entirely on the caller's identity. Keeping them separate but sharing one resource-naming vocabulary is what will let Phase 6b's filtering node cleanly cross-reference the two tables — querying the full registry, then checking each tool's `resource` against the caller's role in `identity.entitlements` — without either table needing to know anything about the other's internal structure.
+
+### The Registration Mechanism, and Why It Needed Its Own Entitlement Check
+
+A registration endpoint, `POST /tools/register`, was built to simulate the literal mechanism a domain team would use to add their own tool into the shared catalog, alongside a `GET /tools` endpoint for listing everything currently registered and enabled. The first version of this endpoint was built with no access control at all, and this was caught and corrected before being treated as finished: tool registration is itself a meaningful write action with real security implications, since a malicious or simply careless registration could introduce a tool whose description is misleading enough to manipulate a future planner's tool selection, or whose registered domain misrepresents its actual origin. Rather than inventing a new, separate authorization concept for this, the existing Phase 5 pattern was reused directly: a new entitlement row was added granting only the `admin` role `write` access to a resource literally named `tool_registry`, and the registration endpoint was updated to require both a verified JWT and a passing `enforce_entitlement` check before any insert is attempted, exactly mirroring how `get_ticket` and `get_portfolio` are protected. This is a clean, concrete illustration of a broader point worth making explicitly in an interview setting: the Data Access Layer built in Phase 5 was never meant to be limited to guarding raw data tables — it is a general-purpose enforcement mechanism suitable for gating any sensitive action, including administrative actions on the platform's own metadata, using one consistent mechanism rather than a different bespoke check for every new kind of protected resource.
+
+Testing this end to end — confirming an unauthenticated registration attempt is rejected, then logging in as a real admin user and successfully registering a third tool, `get_market_data`, through the fully protected endpoint, and finally confirming all three tools appear correctly through the `GET /tools` listing — demonstrated the complete, real mechanism working exactly as designed, including the DAL enforcement being reused, not reinvented, for a new kind of protected resource.
+
+### A Realistic Map of Future Tool Categories, Registered Only as They Become Real
+
+Before building this table, a broader discussion mapped out the full realistic range of tool categories this platform will eventually need, specifically to avoid the trap of registering placeholder tools for capabilities that don't exist yet, which would violate the no-fake-data standard held throughout this project. The categories identified were: relational database reads (the two tools registered in this phase, with future additions like listing a client's tickets or pulling ticket history); relational database writes, deliberately deferred until Phase 6.5's intent classifier exists, since any write action requires the mandatory human-in-the-loop review already established in the compliance policy document used during ingestion planning; vector database and semantic search tools, deferred until Phase 8's RAG pipeline and Phase 9's conversation memory actually exist; document and object storage reads, deferred until Phase 10's MinIO ingestion pipeline exists; external or mocked API calls such as market data or trade execution, mirroring the Full Funnel project's own Portfolio API and Trade API pattern, with any write-capable action among these also mandatorily HITL-gated; and human-in-the-loop escalation itself, which is better understood as a graph-level control mechanism than a tool an LLM directly invokes. Each of these will be registered for real only once its underlying capability is actually built, exactly following the same discipline already applied to every other phase of this project.
+
+**Registry and entitlement-gated registration flow:**
+
+```mermaid
+flowchart TD
+    Domain[Domain team wants to<br/>register a new tool] -->|POST /tools/register<br/>+ Authorization: Bearer token| Endpoint["/tools/register endpoint"]
+
+    Endpoint --> Verify["Depends(verify_access_token)<br/>signature + expiry + type=access"]
+    Verify --> Enforce["enforce_entitlement(role, 'tool_registry', 'write')<br/>same DAL from Phase 5, reused not reinvented"]
+
+    Enforce -->|denied| Reject[403 Forbidden<br/>no insert attempted]
+    Enforce -->|entitled: admin only| Insert[INSERT into identity.tool_registry]
+
+    Insert --> Registry[(identity.tool_registry<br/>tool_name, description,<br/>input_schema, resource,<br/>owning_domain, enabled)]
+
+    Registry -.future, Phase 6b.-> Filter[Filtering node queries registry,<br/>cross-checks resource against<br/>identity.entitlements per caller role]
+    Filter -.future, Phase 6b.-> Planner[Planner receives only the<br/>entitled, relevant tool subset]
+
+    style Verify fill:#fff3cd
+    style Enforce fill:#fff3cd
+    style Reject fill:#f8d7da
+    style Registry fill:#d4edda
+    style Filter fill:#e1f0ff
+    style Planner fill:#e1f0ff
+```
+
 ## Build Phases
 
 - [x] Phase 0: Repository bootstrap, folder architecture, git branching/commit conventions, secrets strategy (`.env` / `.env.example`)
@@ -349,7 +394,7 @@ flowchart TD
 - [x] Chat UI (real, connects to the working `/chat` endpoint; upload icon visibly present but honestly disabled pending Phase 10)
 - [x] Phase 4: Identity & Auth — real `users` table with role CHECK constraint, bcrypt password hashing, JWT access (15 min) + refresh (7 day) tokens, signup/login UI, `/chat` verification, and real token propagation + independent re-verification on the orchestrator→gateway hop (true multi-service agent-to-agent propagation still deferred to Phase 6a/6b)
 - [x] Phase 5: Entitlements & Data Access Layer — role-based `identity.entitlements` table, deterministic DAL gatekeeper (no LLM involvement), `role` threaded through `AgentState`, and a dedicated graph short-circuit so access-denial skips the analyst/evaluator/optimizer loop entirely rather than being treated as a retriable quality issue
-- [ ] Phase 6a: Agent/Tool Registry — federated registration mechanism + metadata tables, modeled on BlackRock Aladdin Copilot's Plugin Registry
+- [x] Phase 6a: Agent/Tool Registry — real `identity.tool_registry` catalog (name, description, JSON input schema, resource, owning domain, enabled flag) sharing the same resource vocabulary as `identity.entitlements`; registration endpoint reuses the Phase 5 DAL pattern (admin-only, JWT-verified, entitlement-enforced) rather than a bespoke check; planner tool-selection and dynamic retriever wiring intentionally deferred to Phase 6b
 - [ ] Phase 6b: Filtering/Access-Control Node — narrows the full registry to a relevant subset before planning (distinct from 6a)
 - [ ] Phase 6.5: Intent classifier — read-only vs. write-action vs. mixed, drives guardrail strictness and entitlement scope
 - [ ] Phase 7: Guardrails — input / tool-call / output, three distinct layers, intent-aware strictness

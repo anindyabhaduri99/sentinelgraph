@@ -12,6 +12,7 @@ from langgraph.graph import StateGraph, END
 from state import AgentState
 from config import CONFIDENCE_THRESHOLD, MAX_RETRIES
 from nodes import (
+    filter_tools_node,
     planner_node,
     retriever_node,
     analyst_node,
@@ -38,6 +39,7 @@ def should_retry_or_finalize(state: AgentState) -> str:
 def build_graph():
     graph = StateGraph(AgentState)
 
+    graph.add_node("filter_tools", filter_tools_node)
     graph.add_node("planner", planner_node)
     graph.add_node("retriever", retriever_node)
     graph.add_node("analyst", analyst_node)
@@ -45,7 +47,8 @@ def build_graph():
     graph.add_node("optimizer", optimizer_node)
     graph.add_node("finalize", finalize_node)
 
-    graph.set_entry_point("planner")
+    graph.set_entry_point("filter_tools")
+    graph.add_edge("filter_tools", "planner")
     graph.add_edge("planner", "retriever")
 
     def should_continue_after_retrieval(state: AgentState) -> str:

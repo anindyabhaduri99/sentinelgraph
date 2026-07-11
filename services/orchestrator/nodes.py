@@ -15,7 +15,8 @@ from itertools import combinations_with_replacement
 import sys
 import os
 
-from dal.entitlements import AccessDeniedError
+from dal.entitlements import AccessDeniedError, check_entitlement
+from registry import list_tools
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "shared", "prompts"))
 
@@ -27,6 +28,26 @@ from loader import load_prompt
 def _wrap(content) -> str:
     """Wraps any interpolated content in the untrusted_input tag boundary."""
     return f"<untrusted_input>{content}</untrusted_input>"
+
+from registry import list_tools
+from dal.entitlements import check_entitlement
+
+async def filter_tools_node(state: AgentState) -> dict:
+    """
+    Runs BEFORE the planner. Queries the full tool registry, keeps only
+    tools whose resource this role is entitled to read, and stores that
+    filtered list in state for the planner to eventually consume. Every
+    call is a fresh check — no caching of entitlements across turns.
+    """
+    all_tools = list_tools()
+    role = state["role"]
+
+    filtered = []
+    for tool in all_tools:
+        if check_entitlement(role, resource=tool["resource"], action="read"):
+            filtered.append(tool)
+
+    return {"available_tools": filtered}
 
 # -----------------------------------------------------------------------
 # PLANNER NODE
@@ -150,7 +171,7 @@ def finalize_node(state: AgentState) -> dict:
             ),
             "escalated_to_human": False,
         }
-        
+
     passed_on_confidence = state["confidence_score"] >= CONFIDENCE_THRESHOLD
     retries_exhausted = state["retry_count"] >= MAX_RETRIES
 

@@ -4,6 +4,7 @@ class AgentState(TypedDict):
     user_message: str
     access_token: str
     role: str
+    available_tools: list
     plan: Optional[str]
     retrieved_context: Optional[str]
     access_denied: bool

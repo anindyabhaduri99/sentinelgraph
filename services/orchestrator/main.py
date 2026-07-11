@@ -62,6 +62,7 @@ async def chat(req: ChatRequest, authorization: str = Header(None), token_payloa
         "retry_count": 0,
         "final_response": None,
         "escalated_to_human": False,
+        "available_tools": [],
     }
 
     result = await compiled_graph.ainvoke(initial_state)
