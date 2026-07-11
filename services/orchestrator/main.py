@@ -8,13 +8,16 @@ The compiled_graph object is built once at import time (see graph.py) and
 reused across every request.
 """
 
-from fastapi import FastAPI, Depends, Header
+from fastapi import FastAPI, Depends, Header, HTTPException, Depends
 from pydantic import BaseModel
 from graph import compiled_graph
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
-from fastapi import Depends
+from typing import Optional
+
 from auth import verify_access_token
+from dal.entitlements import enforce_entitlement, AccessDeniedError
+from registry import register_tool, list_tools
 
 app = FastAPI(title="SentinelGraph Orchestrator")
 app.add_middleware(
@@ -31,20 +34,29 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     final_response: str
-    confidence_score: float
+    confidence_score: Optional[float] = None
     retry_count: int
     escalated_to_human: bool
 
+class RegisterToolRequest(BaseModel):
+    tool_name: str
+    description: str
+    input_schema: dict
+    resource: str
+    owning_domain: str
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, authorization: str = Header(None), token_payload: dict = Depends(verify_access_token)):
-    
+
     raw_token = authorization.removeprefix("Bearer ").strip()
     
     initial_state = {
         "user_message": req.user_message,
         "access_token": raw_token,
+        "role": token_payload["role"],
         "plan": None,
         "retrieved_context": None,
+        "access_denied": False,
         "draft_response": None,
         "confidence_score": None,
         "retry_count": 0,
@@ -60,6 +72,26 @@ async def chat(req: ChatRequest, authorization: str = Header(None), token_payloa
         retry_count=result["retry_count"],
         escalated_to_human=result["escalated_to_human"],
     )
+    
+
+@app.post("/tools/register")
+async def register_tool_endpoint(req: RegisterToolRequest, token_payload: dict = Depends(verify_access_token)):
+    try:
+        enforce_entitlement(token_payload["role"], resource="tool_registry", action="write")
+    except AccessDeniedError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+    return register_tool(
+        tool_name=req.tool_name,
+        description=req.description,
+        input_schema=req.input_schema,
+        resource=req.resource,
+        owning_domain=req.owning_domain,
+    )
+
+@app.get("/tools")
+async def get_tools_endpoint():
+    return list_tools()
 
 @app.get("/health")
 async def health():

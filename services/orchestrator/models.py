@@ -7,7 +7,7 @@ strings gives us type safety and protects against SQL injection by default,
 since SQLAlchemy parameterizes every query it generates.
 """
 
-from sqlalchemy import Column, String, Boolean, Numeric, TIMESTAMP, func
+from sqlalchemy import Column, String, Boolean, Numeric, TIMESTAMP, JSON, func
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -34,3 +34,14 @@ class Portfolio(Base):
     bonds_pct = Column(Numeric(4, 3), nullable=False)
     cash_pct = Column(Numeric(4, 3), nullable=False)
     risk_profile = Column(String(20), nullable=False)
+
+class ToolRegistry(Base):
+    __tablename__ = "tool_registry"
+    __table_args__ = {"schema": "identity"}
+
+    tool_name = Column(String(50), primary_key=True)
+    description = Column(String, nullable=False)
+    input_schema = Column(JSON, nullable=False)
+    resource = Column(String(50), nullable=False)
+    owning_domain = Column(String(50), nullable=False)
+    enabled = Column(Boolean, nullable=False, default=True)

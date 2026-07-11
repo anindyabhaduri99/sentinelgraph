@@ -15,6 +15,8 @@ from itertools import combinations_with_replacement
 import sys
 import os
 
+from dal.entitlements import AccessDeniedError
+
 sys.path.append(os.path.join(os.path.dirname(__file__), "shared", "prompts"))
 
 from state import AgentState
@@ -49,8 +51,13 @@ async def planner_node(state: AgentState) -> dict:
 # node) plus structured-output planning.
 # -----------------------------------------------------------------------
 async def retriever_node(state: AgentState) -> dict:
-    ticket = get_ticket("TCK-1001")
-    portfolio = get_portfolio("CLIENT-88213")
+    try:
+        ticket = get_ticket("TCK-1001", role=state["role"])
+        portfolio = get_portfolio("CLIENT-88213", role=state["role"])
+    except AccessDeniedError as e:
+        return {"retrieved_context": f"Access denied: {e}",
+        "access_denied": True,
+        }
 
     retrieved_context = (
         f"Ticket data: {ticket}\n"
@@ -134,6 +141,16 @@ async def optimizer_node(state: AgentState) -> dict:
 def finalize_node(state: AgentState) -> dict:
     from config import CONFIDENCE_THRESHOLD, MAX_RETRIES
 
+    if state["access_denied"]:
+        return {
+            "final_response": (
+                "Access denied: your role does not have permission to view this "
+                "information. Please contact your administrator if you believe "
+                "this is incorrect."
+            ),
+            "escalated_to_human": False,
+        }
+        
     passed_on_confidence = state["confidence_score"] >= CONFIDENCE_THRESHOLD
     retries_exhausted = state["retry_count"] >= MAX_RETRIES
 

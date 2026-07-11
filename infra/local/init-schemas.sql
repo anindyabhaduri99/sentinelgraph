@@ -148,3 +148,43 @@ INSERT INTO identity.entitlements (role, resource, action) VALUES
     ('external_client', 'ticket', 'read'),
     ('external_client', 'portfolio', 'read')
 ON CONFLICT (role, resource, action) DO NOTHING;
+
+-- =====================================================================
+-- identity.tool_registry
+-- Catalog of registered tools/agents. Pure metadata — this table does
+-- NOT decide who can use a tool (that's identity.entitlements, checked
+-- separately at runtime by Phase 6b's filtering node). This table only
+-- answers "what tools exist and what do they do."
+-- =====================================================================
+CREATE TABLE IF NOT EXISTS identity.tool_registry (
+    tool_name       VARCHAR(50) PRIMARY KEY,     -- unique identifier, e.g. 'get_ticket'
+    description     TEXT NOT NULL,               -- human/LLM-readable: what this tool does
+    input_schema    JSONB NOT NULL,              -- JSON schema describing expected parameters
+    resource        VARCHAR(50) NOT NULL,        -- maps to identity.entitlements.resource (e.g. 'ticket')
+    owning_domain   VARCHAR(50) NOT NULL,        -- which team/domain registered this, e.g. 'client_servicing'
+    enabled         BOOLEAN NOT NULL DEFAULT TRUE, -- lets a tool be disabled without deleting its row
+    created_at      TIMESTAMP NOT NULL DEFAULT now()
+);
+
+-- Seed data: register our two existing tools for real.
+INSERT INTO identity.tool_registry (tool_name, description, input_schema, resource, owning_domain)
+VALUES
+    (
+        'get_ticket',
+        'Retrieves a client service ticket by its ticket ID, including subject, status, and SLA breach flag.',
+        '{"type": "object", "properties": {"ticket_id": {"type": "string", "description": "The ticket identifier, e.g. TCK-1001"}}, "required": ["ticket_id"]}',
+        'ticket',
+        'client_servicing'
+    ),
+    (
+        'get_portfolio',
+        'Retrieves a client portfolio by client ID, including portfolio value, asset allocation percentages, and risk profile.',
+        '{"type": "object", "properties": {"client_id": {"type": "string", "description": "The client identifier, e.g. CLIENT-88213"}}, "required": ["client_id"]}',
+        'portfolio',
+        'portfolio_management'
+    )
+ON CONFLICT (tool_name) DO NOTHING;
+
+INSERT INTO identity.entitlements (role, resource, action) VALUES
+    ('admin', 'tool_registry', 'write')
+ON CONFLICT (role, resource, action) DO NOTHING;

@@ -47,7 +47,20 @@ def build_graph():
 
     graph.set_entry_point("planner")
     graph.add_edge("planner", "retriever")
-    graph.add_edge("retriever", "analyst")
+
+    def should_continue_after_retrieval(state: AgentState) -> str:
+        if state["access_denied"]:
+            return "finalize"
+        return "analyst"
+    
+    graph.add_conditional_edges(
+        "retriever",
+        should_continue_after_retrieval,
+        {
+            "analyst": "analyst",
+            "finalize": "finalize",
+        },
+    )
     graph.add_edge("analyst", "evaluator")
 
     graph.add_conditional_edges(

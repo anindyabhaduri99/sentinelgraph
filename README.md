@@ -284,6 +284,58 @@ flowchart TD
     style Graph fill:#e1f0ff
 ```
 
+## Phase 5: Entitlements & Data Access Layer — Making Role Actually Mean Something
+
+Phase 4 proved that identity could be established and carried across a real service boundary, but it stopped short of the more important question: once you know *who* someone is, what are they actually allowed to *do*? Before this phase, an `external_client` and an `admin` were functionally identical from the retriever's point of view — the role sitting inside a verified JWT was captured correctly but never consulted for anything. This phase is where that changes, and it is the phase most directly aimed at the specific gap exposed in the Sr. Director interview transcript, where the interviewer described the Data Access Layer as "a deterministic rule-based engine" and pressed on exactly how identity gets checked before a tool call is allowed to proceed.
+
+### The Entitlement Table: Role-Based, Not User-Based
+
+A new table, `identity.entitlements`, stores the actual permission rules, and its design is deliberately simple: each row is just a `(role, resource, action)` triple, answering one narrow question — can this role perform this action on this resource. A `UNIQUE` constraint on all three columns prevents duplicate rules from ever being inserted. Twelve rows were seeded, covering five roles (`admin`, `portfolio_manager`, `ops`, `external_client`, `risk_analyst`) against two resources (`ticket`, `portfolio`) and two actions (`read`, `write`), reflecting a reasonable starting set of real permissions rather than a placeholder.
+
+A specific and important design decision here is that entitlements are attached to **roles**, not to individual users — this is Role-Based Access Control, RBAC, as opposed to assigning permissions to each user one at a time. The practical benefit is scale: a newly hired operations employee automatically inherits every `ops` entitlement the moment their account is assigned that role, with zero new entitlement rows required, whereas a per-user permission model would require manually granting rules to every single new hire individually — a pattern that becomes unworkable well before reaching BlackRock-scale headcount.
+
+### The DAL as a Deterministic Gatekeeper, Not a Model Decision
+
+The Data Access Layer itself, `dal/entitlements.py`, is intentionally small and intentionally boring: `check_entitlement(role, resource, action)` runs one query against the entitlement table and returns a plain boolean, and `enforce_entitlement(role, resource, action)` calls that check and raises a custom `AccessDeniedError` if it fails. There is no LLM involvement anywhere in this decision — this was a deliberate design principle stated explicitly and worth restating precisely, since it is exactly the property a regulated environment requires: access-control decisions must be predictable, auditable, and reproducible, which a probabilistic model's output can never fully guarantee. Putting this logic in its own `dal/` subfolder — the first genuine subfolder-within-a-service in this project, requiring its own `__init__.py` to be importable as a proper Python package via a dotted path like `dal.entitlements` — was also a deliberate organizational choice, separating this security-critical logic from the general-purpose data-fetching code in `repository.py` so it can be reviewed, tested, and reasoned about as its own concern.
+
+`repository.py`'s `get_ticket` and `get_portfolio` functions were then updated to accept a `role` parameter and call `enforce_entitlement` as the very first line of their bodies, before any session is even opened. This ordering matters precisely: if entitlement fails, the exception is raised before any database connection is established at all, meaning a denied request never touches Postgres in any way — the rejection happens purely at the permission-check layer, which is both a security property (data is never even queried, let alone returned, for an unauthorized caller) and a performance one (no wasted database round-trip for a request that was always going to be rejected).
+
+### Threading Role Through the Graph, and the Retry-Loop Bug That Followed
+
+For the retriever node to actually call these newly-guarded functions, `role` had to be added as a new field on `AgentState` and populated from the already-verified JWT payload inside the `/chat` endpoint — the same threading pattern already established for `access_token` in Phase 4. `retriever_node` was updated to pass `state["role"]` through and to catch `AccessDeniedError`, initially just embedding a denial message into `retrieved_context` and letting the graph continue normally into the analyst, evaluator, and optimizer as if this were an ordinary low-quality response.
+
+Testing this by temporarily deleting the `external_client`/`ticket` entitlement row and sending a chat request as that role surfaced a genuinely important, easily-overlooked design flaw: the response correctly explained the access restriction to the user, but it did so only after one full retry through the evaluator and optimizer loop. This is worth stating precisely, because the flaw is conceptual, not cosmetic: retrying makes sense when a response's *quality* is the problem — an ambiguous draft, a partially ungrounded answer — but an authorization decision is deterministic and final. No amount of prompt rewriting by the optimizer can ever change whether a role is entitled to a resource; retrying an access-denial wastes real token cost and latency on calls that were guaranteed to be pointless the moment the DAL made its decision.
+
+The fix required a genuine structural change to the graph itself, not just a code tweak inside one node. A new `access_denied` boolean field was added to `AgentState`, set by `retriever_node` in both its success and failure paths so the field is always explicitly present rather than only sometimes set. A new conditional edge was added immediately after the `retriever` node — before the `analyst` node runs at all — checking this flag and routing straight to `finalize_node` on denial, completely bypassing the analyst, evaluator, and optimizer for that turn. `finalize_node` itself was updated to check `access_denied` as its very first condition, ahead of the existing confidence-threshold logic, since in a denied-access run `confidence_score` is never set at all (the evaluator never runs), which in turn required loosening `ChatResponse`'s `confidence_score` field from a required `float` to an `Optional[float]`, since "no evaluation occurred because the request was denied before evaluation was even relevant" is a legitimate, valid state, not missing or malformed data. The corrected behavior, confirmed by testing the same denied-role scenario again, now returns the access-denial message immediately with zero retries and a null confidence score — a clean, minimal, and conceptually correct short-circuit, and a concrete, demonstrable answer to exactly the kind of "how does your system distinguish a quality problem from a permissions problem" question a sharp platform interviewer would ask.
+
+**Entitlement check and access-denied short-circuit, at a glance:**
+
+```mermaid
+flowchart TD
+    Planner[planner_node] --> Retriever[retriever_node]
+    Retriever -->|calls| DAL["dal.entitlements.enforce_entitlement(role, resource, action)"]
+    DAL -->|query| EntTable[(identity.entitlements<br/>role, resource, action)]
+
+    DAL -->|entitled: True| Fetch[Real Postgres query runs:<br/>get_ticket / get_portfolio]
+    DAL -->|entitled: False| Deny[AccessDeniedError raised<br/>BEFORE any DB session opens]
+
+    Fetch --> SetFlag1["access_denied = False<br/>retrieved_context = real data"]
+    Deny --> SetFlag2["access_denied = True<br/>retrieved_context = denial message"]
+
+    SetFlag1 --> Check{"access_denied?<br/>(conditional edge)"}
+    SetFlag2 --> Check
+
+    Check -->|False| Analyst[analyst -> evaluator -> optimizer loop<br/>normal quality-based retry logic]
+    Check -->|True| Finalize["finalize_node<br/>returns denial message immediately<br/>0 retries, confidence_score: null"]
+
+    Analyst --> Finalize2[finalize_node<br/>normal confidence/retry logic]
+
+    style DAL fill:#fff3cd
+    style Deny fill:#f8d7da
+    style Check fill:#fff3cd
+    style Finalize fill:#d4edda
+```
+
 ## Build Phases
 
 - [x] Phase 0: Repository bootstrap, folder architecture, git branching/commit conventions, secrets strategy (`.env` / `.env.example`)
@@ -296,7 +348,7 @@ flowchart TD
 - [x] Cost/token monitoring dashboard UI (static HTML/JS, polls the real `/usage` endpoint)
 - [x] Chat UI (real, connects to the working `/chat` endpoint; upload icon visibly present but honestly disabled pending Phase 10)
 - [x] Phase 4: Identity & Auth — real `users` table with role CHECK constraint, bcrypt password hashing, JWT access (15 min) + refresh (7 day) tokens, signup/login UI, `/chat` verification, and real token propagation + independent re-verification on the orchestrator→gateway hop (true multi-service agent-to-agent propagation still deferred to Phase 6a/6b)
-- [ ] Phase 5: Entitlements & Data Access Layer — entitlement tables, tool calls gated on them
+- [x] Phase 5: Entitlements & Data Access Layer — role-based `identity.entitlements` table, deterministic DAL gatekeeper (no LLM involvement), `role` threaded through `AgentState`, and a dedicated graph short-circuit so access-denial skips the analyst/evaluator/optimizer loop entirely rather than being treated as a retriable quality issue
 - [ ] Phase 6a: Agent/Tool Registry — federated registration mechanism + metadata tables, modeled on BlackRock Aladdin Copilot's Plugin Registry
 - [ ] Phase 6b: Filtering/Access-Control Node — narrows the full registry to a relevant subset before planning (distinct from 6a)
 - [ ] Phase 6.5: Intent classifier — read-only vs. write-action vs. mixed, drives guardrail strictness and entitlement scope

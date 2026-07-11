@@ -10,14 +10,16 @@ SQLAlchemy ORM objects directly.
 from pydoc import cli
 from db import SessionLocal
 from models import Ticket, Portfolio
+from dal.entitlements import enforce_entitlement
 
-def get_ticket(ticket_id: str) -> dict:
+def get_ticket(ticket_id: str, role: str) -> dict:
     """
     Equivalent of: SELECT * FROM ticketing.tickets WHERE ticket_id = :ticket_id
     SQLAlchemy generates and parameterizes this automatically — no raw
     string concatenation, which is what prevents SQL injection here.
     """
 
+    enforce_entitlement(role, resource="ticket", action="read")
     session = SessionLocal()
 
     try:
@@ -35,10 +37,12 @@ def get_ticket(ticket_id: str) -> dict:
         session.close()
 
 
-def get_portfolio(client_id: str) -> dict:
+def get_portfolio(client_id: str, role: str) -> dict:
     """
     Equivalent of: SELECT * FROM ticketing.portfolios WHERE client_id = :client_id
     """
+
+    enforce_entitlement(role, resource="portfolio", action="read")
     session = SessionLocal()
 
     try:
