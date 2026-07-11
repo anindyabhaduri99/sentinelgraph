@@ -18,6 +18,7 @@ from typing import Optional
 from auth import verify_access_token
 from dal.entitlements import enforce_entitlement, AccessDeniedError
 from registry import register_tool, list_tools
+from approvals import list_pending_approvals, decide_approval
 
 app = FastAPI(title="SentinelGraph Orchestrator")
 app.add_middleware(
@@ -45,6 +46,9 @@ class RegisterToolRequest(BaseModel):
     resource: str
     owning_domain: str
 
+class DecisionRequest(BaseModel):
+    decision: str
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, authorization: str = Header(None), token_payload: dict = Depends(verify_access_token)):
 
@@ -66,6 +70,8 @@ async def chat(req: ChatRequest, authorization: str = Header(None), token_payloa
     }
 
     result = await compiled_graph.ainvoke(initial_state)
+
+    print(f"DEBUG final result from graph: {result}", flush=True)
 
     return ChatResponse(
         final_response=result["final_response"],
@@ -93,6 +99,27 @@ async def register_tool_endpoint(req: RegisterToolRequest, token_payload: dict =
 @app.get("/tools")
 async def get_tools_endpoint():
     return list_tools()
+
+from approvals import list_pending_approvals, decide_approval
+
+class DecisionRequest(BaseModel):
+    decision: str
+
+@app.get("/approvals")
+async def get_approvals(token_payload: dict = Depends(verify_access_token)):
+    try:
+        enforce_entitlement(token_payload["role"], resource="approval_queue", action="read")
+    except AccessDeniedError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    return list_pending_approvals()
+
+@app.post("/approvals/{approval_id}/decide")
+async def decide_approval_endpoint(approval_id: int, req: DecisionRequest, token_payload: dict = Depends(verify_access_token)):
+    try:
+        enforce_entitlement(token_payload["role"], resource="approval_queue", action="write")
+    except AccessDeniedError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    return decide_approval(approval_id, req.decision, token_payload["sub"])
 
 @app.get("/health")
 async def health():

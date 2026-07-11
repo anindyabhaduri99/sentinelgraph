@@ -11,16 +11,15 @@ tags before being interpolated into a prompt, per the injection defense
 convention defined in _injection_defense_block.yml.
 """
 
-from itertools import combinations_with_replacement
 import sys
 import os
-
-from dal.entitlements import AccessDeniedError, check_entitlement
-from registry import list_tools
+from itertools import combinations_with_replacement
+from state import AgentState
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "shared", "prompts"))
 
-from state import AgentState
+from dal.entitlements import AccessDeniedError, check_entitlement
+from registry import list_tools
 from gateway_client import call_model
 from repository import get_ticket, get_portfolio
 from loader import load_prompt
@@ -29,8 +28,24 @@ def _wrap(content) -> str:
     """Wraps any interpolated content in the untrusted_input tag boundary."""
     return f"<untrusted_input>{content}</untrusted_input>"
 
-from registry import list_tools
-from dal.entitlements import check_entitlement
+async def intent_classifier_node(state: AgentState) -> dict:
+    system_prompt = load_prompt("intent_classifier")
+
+    raw_intent = await call_model(
+        role="intent_classifier",
+        system_prompt=system_prompt,
+        user_message=_wrap(state["user_message"]),
+        access_token=state["access_token"],
+    )
+
+    cleaned_intent = raw_intent.strip().lower()
+
+    valid_intents = ["read_only", "write_action", "mixed"]
+    if cleaned_intent not in valid_intents:
+        cleaned_intent = "mixed"
+
+    print(f"DEBUG intent_classifier_node: user_message={state['user_message']}, intent={cleaned_intent}", flush=True)
+    return {"intent": cleaned_intent}
 
 async def filter_tools_node(state: AgentState) -> dict:
     """
@@ -172,6 +187,24 @@ def finalize_node(state: AgentState) -> dict:
             "escalated_to_human": False,
         }
 
+    if state["intent"] in ["write_action", "mixed"]:
+        from approvals import create_pending_approval
+        create_pending_approval(
+            user_id=state["role"],
+            role=state["role"],
+            original_request=state["user_message"],
+            draft_response=state["draft_response"] or "",
+            action_type=state["intent"],
+        )
+        return {
+            "final_response": (
+                "A draft response has been prepared based on your request, but "
+                "because this involves a write action, it requires human approval "
+                "before anything is executed. It has been added to the approval queue."
+            ),
+            "escalated_to_human": True,
+        }
+
     passed_on_confidence = state["confidence_score"] >= CONFIDENCE_THRESHOLD
     retries_exhausted = state["retry_count"] >= MAX_RETRIES
 
@@ -190,10 +223,6 @@ def finalize_node(state: AgentState) -> dict:
             "escalated_to_human": True,
         }
 
-    # Defensive fallback — should not normally be reached, since the
-    # conditional edge in graph.py only routes here when one of the two
-    # conditions above is already true. Escalate rather than silently
-    # returning an unvalidated draft.
     return {
         "final_response": (
             "This request could not be confidently resolved and has been "

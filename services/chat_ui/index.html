@@ -18,6 +18,9 @@
       border-bottom: 1px solid #30363d;
       font-size: 16px;
       font-weight: 600;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
     }
     #messages {
       flex: 1;
@@ -96,13 +99,14 @@
   </style>
 </head>
 <body>
-    <header style="display: flex; justify-content: space-between; align-items: center;">
-        <span>SentinelGraph — Chat</span>
-        <span style="font-size: 13px; color: #8b949e;">
-          <span id="user-label"></span>
-          <button id="logout-btn" style="margin-left: 12px; background: #21262d; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px;">Log out</button>
-        </span>
-      </header>
+  <header>
+    <span>SentinelGraph — Chat</span>
+    <span style="font-size: 13px; color: #8b949e;">
+      <span id="user-label"></span>
+      <a id="approvals-link" href="#" style="margin-left: 12px; color: #58a6ff; text-decoration: none; display: none;">Approvals</a>
+      <button id="logout-btn" style="margin-left: 12px; background: #21262d; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px;">Log out</button>
+    </span>
+  </header>
   <div id="messages"></div>
   <div id="input-bar">
     <span id="upload-icon" title="Document upload — coming in Phase 10 (MinIO ingestion)">📎</span>
@@ -111,34 +115,43 @@
   </div>
 
   <script>
-    // On load: pull token/role from URL params (first visit after login redirect),
-    // store them, then clean the URL so tokens don't linger in browser history.
+    const ORCHESTRATOR_URL = "http://localhost:8090";
+    const messagesEl = document.getElementById("messages");
+    const inputEl = document.getElementById("user-input");
+    const sendBtn = document.getElementById("send-btn");
+
+    // On load: pull token/role from URL params (first visit after login
+    // redirect), store them, then clean the URL so tokens don't linger
+    // in browser history.
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.has("access_token")) {
-    localStorage.setItem("access_token", urlParams.get("access_token"));
-    localStorage.setItem("refresh_token", urlParams.get("refresh_token"));
-    localStorage.setItem("role", urlParams.get("role"));
-    localStorage.setItem("user_id", urlParams.get("user_id"));
-    window.history.replaceState({}, document.title, window.location.pathname);
+      localStorage.setItem("access_token", urlParams.get("access_token"));
+      localStorage.setItem("refresh_token", urlParams.get("refresh_token"));
+      localStorage.setItem("role", urlParams.get("role"));
+      localStorage.setItem("user_id", urlParams.get("user_id"));
+      window.history.replaceState({}, document.title, window.location.pathname);
     }
 
     const userLabel = document.getElementById("user-label");
     const storedUserId = localStorage.getItem("user_id");
     const storedRole = localStorage.getItem("role");
     if (storedUserId) {
-    userLabel.textContent = `${storedUserId} (${storedRole})`;
+      userLabel.textContent = `${storedUserId} (${storedRole})`;
     } else {
-    userLabel.textContent = "Not signed in";
+      userLabel.textContent = "Not signed in";
+    }
+
+    const approvalsLink = document.getElementById("approvals-link");
+    if (storedRole === "admin" || storedRole === "ops") {
+      approvalsLink.style.display = "inline";
+      approvalsLink.href = `http://localhost:3004?access_token=${localStorage.getItem("access_token")}`;
+      approvalsLink.target = "_blank";
     }
 
     document.getElementById("logout-btn").addEventListener("click", () => {
-    localStorage.clear();
-    window.location.href = "http://localhost:3003";
+      localStorage.clear();
+      window.location.href = "http://localhost:3003";
     });
-    const ORCHESTRATOR_URL = "http://localhost:8090";
-    const messagesEl = document.getElementById("messages");
-    const inputEl = document.getElementById("user-input");
-    const sendBtn = document.getElementById("send-btn");
 
     function appendMessage(role, text, meta) {
       const div = document.createElement("div");
@@ -158,41 +171,41 @@
     }
 
     async function sendMessage() {
-  const text = inputEl.value.trim();
-  if (!text) return;
+      const text = inputEl.value.trim();
+      if (!text) return;
 
-  appendMessage("user", text);
-  inputEl.value = "";
-  sendBtn.disabled = true;
+      appendMessage("user", text);
+      inputEl.value = "";
+      sendBtn.disabled = true;
 
-  const loadingDiv = appendMessage("assistant", "Thinking...");
-  loadingDiv.classList.add("loading");
+      const loadingDiv = appendMessage("assistant", "Thinking...");
+      loadingDiv.classList.add("loading");
 
-  try {
-    const res = await fetch(`${ORCHESTRATOR_URL}/chat`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${localStorage.getItem("access_token")}`,
-      },
-      body: JSON.stringify({ user_message: text }),
-    });
-    if (!res.ok) throw new Error(`Server returned ${res.status}`);
-    const data = await res.json();
+      try {
+        const res = await fetch(`${ORCHESTRATOR_URL}/chat`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${localStorage.getItem("access_token")}`,
+          },
+          body: JSON.stringify({ user_message: text }),
+        });
+        if (!res.ok) throw new Error(`Server returned ${res.status}`);
+        const data = await res.json();
 
-    loadingDiv.remove();
-    appendMessage("assistant", data.final_response, {
-      confidence: data.confidence_score,
-      retries: data.retry_count,
-      escalated: data.escalated_to_human,
-    });
-  } catch (err) {
-    loadingDiv.remove();
-    appendMessage("assistant", `Error: ${err.message}`);
-  } finally {
-    sendBtn.disabled = false;
-  }
-}
+        loadingDiv.remove();
+        appendMessage("assistant", data.final_response, {
+          confidence: data.confidence_score,
+          retries: data.retry_count,
+          escalated: data.escalated_to_human,
+        });
+      } catch (err) {
+        loadingDiv.remove();
+        appendMessage("assistant", `Error: ${err.message}`);
+      } finally {
+        sendBtn.disabled = false;
+      }
+    }
 
     sendBtn.addEventListener("click", sendMessage);
     inputEl.addEventListener("keydown", (e) => {

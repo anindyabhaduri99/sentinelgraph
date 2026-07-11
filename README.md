@@ -381,6 +381,44 @@ flowchart TD
     style Planner fill:#e1f0ff
 ```
 
+## Phase 6b: Filtering/Access-Control Node — the Registry Actually Gets Used
+
+Phase 6a built a real, queryable catalog, but nothing in the running system actually read from it — the retriever remained hardcoded, entirely disconnected from the registry's existence. Phase 6b closes that gap by adding a genuine new node to the LangGraph itself, `filter_tools_node`, which runs first, before the planner, and whose entire job is to turn the full tool catalog into a per-request, per-role, individually tailored subset. It is worth stating precisely what this phase does and does not achieve, continuing the same honest scoping discipline used throughout this project: this phase makes filtering real and observable, but it does not yet make the planner intelligent enough to consume that filtered list via structured output — that remains the distinct, still-deferred piece originally flagged back in Phase 3.
+
+### Why This Runs as Its Own Node, Before the Planner
+
+A deliberate design decision, made explicitly before writing any code, was to build this as a genuine LangGraph node — registered with its own name, visible as its own step in `graph.py` and in any LangSmith trace — rather than folding the filtering logic as a plain helper function called from inside the planner or retriever. The reasoning is that this mirrors the actual Aladdin Copilot architecture from the ZenML case study precisely: filtering the tool universe is treated there as its own distinct pipeline stage, conceptually and architecturally separate from planning itself, and keeping it as a separate, inspectable node here means it is something concrete to point to and narrate in an interview — "here is the exact stage where the tool universe gets narrowed before any reasoning about which tool to call even begins" — rather than logic buried invisibly inside another function.
+
+The node was made the graph's entry point, running before `planner`, for a reason worth being precise about: a planner should never be shown a tool it isn't entitled to use in the first place. Filtering after planning would mean the planner might reason about, or even attempt to select, a tool the caller has no right to invoke, only to have that attempt rejected downstream — an unnecessary, confusing round trip. Filtering first means the planner's entire world of visible options is already the correct, authorized one from the very first step.
+
+### Reusing the DAL's Boolean Check, Not Its Enforcing Version
+
+The filtering node calls `list_tools()` from the Phase 6a registry to get every registered, enabled tool, then iterates over that list checking each tool's `resource` field against the current role using `check_entitlement` — deliberately the plain boolean-returning function from Phase 5's DAL, not `enforce_entitlement`, which raises an exception. This distinction matters and was worth making explicit rather than reaching for the wrong one out of habit: `enforce_entitlement` is the right choice when a single denial should halt an entire request, exactly as it does inside `get_ticket` and `get_portfolio`. Here, a single tool failing its entitlement check should not halt anything at all — it should simply be excluded from the list while every other entitled tool proceeds normally. Using the boolean form and building the filtered list with a plain, explicit loop — checking each tool one at a time and appending it to a results list only if it passes — keeps this logic easy to read and reason about, deliberately favoring an explicit loop over a more compact one-line list comprehension, consistent with a broader preference established during this phase for simplified, spelled-out code over terser syntax, even at the cost of a few extra lines.
+
+A related design decision, discussed and confirmed explicitly, is that this filtering check runs completely fresh on every single chat turn, with no caching of a user's available tools across requests within a session. The tradeoff is a small, repeated cost — a handful of fast database queries every turn — in exchange for a meaningful correctness guarantee: if an administrator revokes or changes a role's entitlements mid-session, the very next turn reflects that change immediately, rather than an earlier, now-stale filtered list continuing to apply for the remainder of a session. Building a safe caching layer for this is a legitimate future optimization, but it was explicitly deferred to Phase 9.5, once a proper cache-invalidation strategy exists to build it on top of, rather than added here as a premature shortcut.
+
+### What Testing This Actually Revealed
+
+Testing this node by logging in as an `admin` user and inspecting the filtered tool list via a temporary debug print revealed something genuinely informative rather than merely confirming the obvious: the list correctly excluded `get_market_data`, the third tool registered in Phase 6a, even for the `admin` role. This was not a bug — it was the filtering logic working exactly as intended, surfacing a real gap in the entitlement seed data rather than in the filtering code itself: no role had actually been granted `read` access to the `market_data` resource at all, since Phase 5's original seed data only ever covered `ticket` and `portfolio`. This is a strong, concrete example worth remembering for an interview setting of what a well-built access-control layer should do — it does not merely check whether a caller is generally powerful or senior, such as being an administrator; it checks the specific, exact resource in question, and correctly produces "no" even for a normally broad role when no explicit grant for that particular resource exists. A shallower implementation might have been tempted to special-case administrators as having implicit access to everything, which would have hidden this exact kind of gap rather than surfacing it.
+
+**Filtering node's position in the graph, and what it produces:**
+
+```mermaid
+flowchart TD
+    Start([POST /chat]) --> FilterNode["filter_tools_node<br/>(new entry point, runs FIRST)"]
+
+    FilterNode -->|"list_tools()"| Registry[(identity.tool_registry<br/>all enabled tools)]
+    FilterNode -->|"for each tool:<br/>check_entitlement(role, tool.resource, 'read')<br/>boolean check, NOT enforce_entitlement"| EntTable[(identity.entitlements)]
+
+    FilterNode --> Result["available_tools in state:<br/>only tools this role passed for<br/>— recomputed fresh EVERY turn,<br/>no caching across requests"]
+
+    Result --> Planner[planner_node]
+    Planner --> Retriever[retriever_node]
+
+    style FilterNode fill:#fff3cd
+    style Result fill:#d4edda
+```
+
 ## Build Phases
 
 - [x] Phase 0: Repository bootstrap, folder architecture, git branching/commit conventions, secrets strategy (`.env` / `.env.example`)
@@ -395,7 +433,7 @@ flowchart TD
 - [x] Phase 4: Identity & Auth — real `users` table with role CHECK constraint, bcrypt password hashing, JWT access (15 min) + refresh (7 day) tokens, signup/login UI, `/chat` verification, and real token propagation + independent re-verification on the orchestrator→gateway hop (true multi-service agent-to-agent propagation still deferred to Phase 6a/6b)
 - [x] Phase 5: Entitlements & Data Access Layer — role-based `identity.entitlements` table, deterministic DAL gatekeeper (no LLM involvement), `role` threaded through `AgentState`, and a dedicated graph short-circuit so access-denial skips the analyst/evaluator/optimizer loop entirely rather than being treated as a retriable quality issue
 - [x] Phase 6a: Agent/Tool Registry — real `identity.tool_registry` catalog (name, description, JSON input schema, resource, owning domain, enabled flag) sharing the same resource vocabulary as `identity.entitlements`; registration endpoint reuses the Phase 5 DAL pattern (admin-only, JWT-verified, entitlement-enforced) rather than a bespoke check; planner tool-selection and dynamic retriever wiring intentionally deferred to Phase 6b
-- [ ] Phase 6b: Filtering/Access-Control Node — narrows the full registry to a relevant subset before planning (distinct from 6a)
+- [x] Phase 6b: Filtering/Access-Control Node — new `filter_tools_node`, graph entry point running before the planner, cross-checks the Phase 6a registry against Phase 5 entitlements per-role using the boolean `check_entitlement` (not the enforcing version), recomputed fresh every turn with no caching; testing surfaced a genuine entitlement seed-data gap (`market_data` granted to no role at all, correctly excluded even for admin) rather than a filtering bug
 - [ ] Phase 6.5: Intent classifier — read-only vs. write-action vs. mixed, drives guardrail strictness and entitlement scope
 - [ ] Phase 7: Guardrails — input / tool-call / output, three distinct layers, intent-aware strictness
 - [ ] Phase 7.5: Error taxonomy and structured error handling feeding audit/guardrails

@@ -63,3 +63,24 @@ def get_portfolio(client_id: str, role: str) -> dict:
 
     finally:
         session.close()
+
+def update_portfolio_allocation(client_id: str, equities_pct: float, bonds_pct: float, cash_pct: float, role: str) -> dict:
+    enforce_entitlement(role, resource="portfolio", action="write")
+
+    session = SessionLocal()
+    try:
+        portfolio = session.query(Portfolio).filter(Portfolio.client_id == client_id).first()
+        if portfolio is None:
+            return {"error": f"client {client_id} not found"}
+
+        portfolio.equities_pct = equities_pct
+        portfolio.bonds_pct = bonds_pct
+        portfolio.cash_pct = cash_pct
+        session.commit()
+
+        return {
+            "client_id": client_id,
+            "new_allocations": {"equities": equities_pct, "bonds": bonds_pct, "cash": cash_pct},
+        }
+    finally:
+        session.close()

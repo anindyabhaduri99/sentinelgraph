@@ -146,6 +146,13 @@ services:
     ports:
       - "3003:80"
 
+  approvals-ui:
+    build: ./services/approvals_ui
+    container_name: sentinelgraph-approvals-ui
+    restart: unless-stopped
+    ports:
+      - "3004:80"
+
 volumes:
   postgres_data:
   chroma_data:

@@ -7,7 +7,7 @@ strings gives us type safety and protects against SQL injection by default,
 since SQLAlchemy parameterizes every query it generates.
 """
 
-from sqlalchemy import Column, String, Boolean, Numeric, TIMESTAMP, JSON, func
+from sqlalchemy import Column, String, Boolean, Numeric, TIMESTAMP, JSON, func, Integer
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -45,3 +45,18 @@ class ToolRegistry(Base):
     resource = Column(String(50), nullable=False)
     owning_domain = Column(String(50), nullable=False)
     enabled = Column(Boolean, nullable=False, default=True)
+
+class PendingApproval(Base):
+    __tablename__ = "pending_approvals"
+    __table_args__ = {"schema": "identity"}
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(50), nullable=False)
+    role = Column(String(30), nullable=False)
+    original_request = Column(String, nullable=False)
+    draft_response = Column(String, nullable=False)
+    action_type = Column(String(20), nullable=False)
+    status = Column(String(20), nullable=False, default="pending")
+    created_at = Column(TIMESTAMP, server_default=func.now())
+    reviewed_by = Column(String(50))
+    reviewed_at = Column(TIMESTAMP)

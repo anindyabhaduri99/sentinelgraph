@@ -34,6 +34,10 @@ ROLE_CONFIG = {
         "provider": "openai",
         "model": "gpt-4o-mini",         # lightweight — only rewrites a prompt on a failed retry
     },
+    "intent_classifier": {
+        "provider": "anthropic",
+        "model": "claude-haiku-4-5",
+    },
 }
 
 

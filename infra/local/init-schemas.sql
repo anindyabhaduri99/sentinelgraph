@@ -188,3 +188,23 @@ ON CONFLICT (tool_name) DO NOTHING;
 INSERT INTO identity.entitlements (role, resource, action) VALUES
     ('admin', 'tool_registry', 'write')
 ON CONFLICT (role, resource, action) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS identity.pending_approvals (
+    id                  SERIAL PRIMARY KEY,
+    user_id             VARCHAR(50) NOT NULL,
+    role                VARCHAR(30) NOT NULL,
+    original_request    TEXT NOT NULL,
+    draft_response      TEXT NOT NULL,
+    action_type         VARCHAR(20) NOT NULL,
+    status              VARCHAR(20) NOT NULL DEFAULT 'pending',
+    created_at          TIMESTAMP NOT NULL DEFAULT now(),
+    reviewed_by         VARCHAR(50),
+    reviewed_at         TIMESTAMP
+);
+
+INSERT INTO identity.entitlements (role, resource, action) VALUES
+    ('admin', 'approval_queue', 'read'),
+    ('admin', 'approval_queue', 'write'),
+    ('ops', 'approval_queue', 'read'),
+    ('ops', 'approval_queue', 'write')
+ON CONFLICT (role, resource, action) DO NOTHING;

@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>SentinelGraph — Approvals</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; background: #0d1117; color: #e6edf3; padding: 24px; margin: 0; }
+    header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+    .meta { font-size: 12px; color: #8b949e; margin-bottom: 8px; }
+    .request { font-weight: 600; margin-bottom: 8px; }
+    .draft { white-space: pre-wrap; font-size: 13px; background: #0d1117; padding: 12px; border-radius: 6px; margin-bottom: 12px; max-height: 300px; overflow-y: auto; }
+    button { border: none; border-radius: 6px; padding: 8px 16px; margin-right: 8px; cursor: pointer; font-size: 13px; }
+    .approve { background: #238636; color: white; }
+    .reject { background: #da3633; color: white; }
+    #empty { color: #8b949e; }
+  </style>
+</head>
+<body>
+  <header>
+    <h2>Pending Approvals</h2>
+  </header>
+  <div id="list"></div>
+
+  <script>
+    const ORCHESTRATOR_URL = "http://localhost:8090";
+
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.has("access_token")) {
+      localStorage.setItem("access_token", urlParams.get("access_token"));
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+
+    const token = localStorage.getItem("access_token");
+
+    async function loadApprovals() {
+      const res = await fetch(`${ORCHESTRATOR_URL}/approvals`, {
+        headers: { "Authorization": `Bearer ${token}` },
+      });
+      const data = await res.json();
+      const listEl = document.getElementById("list");
+
+      if (!res.ok) {
+        listEl.innerHTML = `<div id="empty">Error: ${data.detail || "failed to load"}</div>`;
+        return;
+      }
+      if (data.length === 0) {
+        listEl.innerHTML = `<div id="empty">No pending approvals.</div>`;
+        return;
+      }
+
+      listEl.innerHTML = data.map(item => `
+        <div class="card">
+          <div class="meta">#${item.id} · ${item.action_type} · requested by ${item.user_id} · ${item.created_at}</div>
+          <div class="request">${item.original_request}</div>
+          <div class="draft">${item.draft_response}</div>
+          <button class="approve" onclick="decide(${item.id}, 'approve')">Approve</button>
+          <button class="reject" onclick="decide(${item.id}, 'reject')">Reject</button>
+        </div>
+      `).join("");
+    }
+
+    async function decide(id, decision) {
+      await fetch(`${ORCHESTRATOR_URL}/approvals/${id}/decide`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`,
+        },
+        body: JSON.stringify({ decision }),
+      });
+      loadApprovals();
+    }
+
+    loadApprovals();
+  </script>
+</body>
+</html>

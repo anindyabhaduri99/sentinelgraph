@@ -12,6 +12,7 @@ from langgraph.graph import StateGraph, END
 from state import AgentState
 from config import CONFIDENCE_THRESHOLD, MAX_RETRIES
 from nodes import (
+    intent_classifier_node,
     filter_tools_node,
     planner_node,
     retriever_node,
@@ -22,14 +23,6 @@ from nodes import (
 )
 
 def should_retry_or_finalize(state: AgentState) -> str:
-    """
-    Conditional edge function, called after the evaluator node runs.
-    Returns "finalize" if we've either passed the confidence threshold or
-    exhausted retries; otherwise "retry" to loop back through the
-    optimizer. This is the concrete mechanism preventing an unbounded
-    agent loop.
-    """
-
     if state['confidence_score'] >= CONFIDENCE_THRESHOLD:
         return "finalize"
     if state['retry_count'] >= MAX_RETRIES:
@@ -39,6 +32,7 @@ def should_retry_or_finalize(state: AgentState) -> str:
 def build_graph():
     graph = StateGraph(AgentState)
 
+    graph.add_node("intent_classifier", intent_classifier_node)
     graph.add_node("filter_tools", filter_tools_node)
     graph.add_node("planner", planner_node)
     graph.add_node("retriever", retriever_node)
@@ -48,14 +42,15 @@ def build_graph():
     graph.add_node("finalize", finalize_node)
 
     graph.set_entry_point("filter_tools")
-    graph.add_edge("filter_tools", "planner")
+    graph.add_edge("filter_tools", "intent_classifier")
+    graph.add_edge("intent_classifier", "planner")
     graph.add_edge("planner", "retriever")
 
     def should_continue_after_retrieval(state: AgentState) -> str:
         if state["access_denied"]:
             return "finalize"
         return "analyst"
-    
+
     graph.add_conditional_edges(
         "retriever",
         should_continue_after_retrieval,
@@ -79,5 +74,4 @@ def build_graph():
 
     return graph.compile()
 
-compiled_graph = build_graph()    
-
+compiled_graph = build_graph()
