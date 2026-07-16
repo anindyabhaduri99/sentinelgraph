@@ -464,6 +464,50 @@ flowchart TD
     style ReviewerUI fill:#d4edda
 ```
 
+## Reprioritized Priority Item 1: Structured Planner Output and Dynamic, Parallel Tool Dispatch
+
+With the interview a small number of days away, remaining build time was deliberately reordered around what maps most directly to the JD's stated AI/ML requirements, and this was the first and highest-priority item: replacing the planner's free-text advisory prose, unchanged since Phase 3, with genuine schema-validated structured output, and replacing the retriever's hardcoded, fixed tool calls with real dynamic dispatch based on that structured output. This closes a gap explicitly flagged and deliberately deferred as far back as Phase 3's original design notes, once there was finally something real for it to select from — the Phase 6a registry and the Phase 6b entitlement-filtered tool list.
+
+### From Single-Tool to Multi-Tool, Parallel Selection
+
+The first design considered was a planner that selects exactly one tool per turn. This was explicitly reconsidered and expanded before being built, based on a real, well-founded objection: a genuine investment-servicing question frequently needs more than one data source at once — a ticket and a portfolio, for instance — and a planner limited to one tool per turn cannot express that. The corrected design uses a `ToolPlan` Pydantic model wrapping a list of `ToolCall` objects, each carrying a `tool_name` and its `parameters`, so a single planning pass can select as many tools as the question genuinely requires. A further, deliberately scoped-down design point is worth stating precisely: this version assumes every selected tool call is independent and can run concurrently, with no tool's output feeding another tool's input. The fuller production version of this — a planner returning an ordered list of steps with explicit dependency links, so that one step's result can be substituted into a later step's parameters, and an `execution_mode` flag distinguishing genuinely parallel-safe steps from ones requiring strict sequencing — was discussed in real detail and consciously deferred as a documented, discussable design rather than built, since proving the core mechanism end to end with two genuinely independent tools was judged the better use of the remaining time than building a fuller dependency-aware executor.
+
+### Real Concurrent Execution, Not Just a List of Calls
+
+The retriever node was rewritten to execute every tool call the planner selected using genuine concurrency rather than a simple sequential loop, since `get_ticket` and `get_portfolio` are ordinary synchronous SQLAlchemy functions running inside an otherwise fully asynchronous service. Each call is wrapped in `asyncio.to_thread`, which runs the synchronous database call in a background thread without blocking the async event loop, and all such wrapped calls for a given turn are launched together via `asyncio.gather`, so independent tool calls genuinely execute concurrently rather than one after another. Each tool's result is labeled with its own tool name and joined into a single combined string, which becomes the `retrieved_context` the analyst node receives exactly as before — this is the concrete mechanism by which multiple tool outputs get combined into prompt augmentation, and it now scales naturally to however many tools a given question's plan actually calls for, rather than being fixed at exactly two.
+
+### An Explicit Allowlist, Not Fully Dynamic Reflection-Based Dispatch
+
+A specific question was raised and is worth recording precisely: why does the retriever hold a hardcoded mapping, `TOOL_DISPATCH`, from tool names to real Python functions, rather than looking up and invoking a function dynamically purely from what the registry contains? The honest answer is that the registry's rows can only ever store metadata — a tool's name, description, and JSON schema — never a live function reference, since that cannot be serialized into a database column. A fully dynamic system would need the registry to instead store something like a module path and function name as a string, with the retriever using Python's `importlib` and `getattr` to resolve and call that function purely from string data supplied by a database row at runtime. This was deliberately not built, and the reasoning is a real security consideration worth stating plainly rather than glossing over: dynamically invoking a function looked up by an arbitrary string carries meaningful risk if that string's source is ever compromised or misconfigured, similar in spirit to why arbitrary `eval()` of untrusted input is avoided. The explicit `TOOL_DISPATCH` dictionary — moved into `config.py` alongside the existing `CONFIDENCE_THRESHOLD` and `MAX_RETRIES` settings, following the same "one source of truth for configuration" principle already used elsewhere in this project — is a small, human-reviewed allowlist stating exactly which real functions the retriever is permitted to call, regardless of what a registry row or a planner's output might claim. This is a legitimate, defensible production pattern in its own right, not merely a shortcut: many real systems deliberately keep this mapping explicit rather than fully dynamic, specifically to avoid the class of risk that unconstrained dynamic dispatch introduces.
+
+### A Concrete Lesson in Not Trusting an LLM's Instruction-Following for Structural Guarantees
+
+Testing this revealed a genuinely instructive failure worth recording in detail rather than a passing footnote. The first version of the planner prompt asked for raw JSON with no further qualification, and the actual model response, inspected directly via a temporary debug print of the raw string, came back wrapped in markdown code fences — a leading and trailing triple-backtick sequence with a `json` language tag — which caused `json.loads` to fail immediately with a parsing error, since backticks are not valid JSON syntax. The first response to this was to explicitly instruct the model, in the system prompt itself, not to use markdown formatting and to return nothing but raw JSON. Retesting with the identical question and inspecting the raw response again showed the model repeated the exact same markdown-wrapped behavior, despite the explicit instruction to the contrary. This is a small but genuinely important, empirically demonstrated lesson: prompt instructions are a strong nudge on model behavior, not a structural guarantee, and a production system cannot rely on instruction-following alone wherever a strict machine-readable contract is required. The correct, final fix combines both layers rather than choosing one over the other — the clearer prompt instruction was kept, since it may still reduce the frequency of this behavior or matter for other model families, and a defensive parsing step was added in code: before attempting to parse the response, the planner node checks whether the string starts with a triple-backtick fence and, if so, strips the fence and any leading `json` language tag before handing the cleaned string to `json.loads`. Being able to describe this exact sequence — hypothesis, direct empirical verification via tracing rather than assumption, and a corrected design combining a prompt-level nudge with a code-level safety net — is a strong, concrete answer to how this project approaches trusting model behavior for anything structurally load-bearing.
+
+**Structured planner output and parallel dynamic dispatch, end to end:**
+
+```mermaid
+flowchart TD
+    Planner[planner_node] --> Prompt["Prompt includes available_tools<br/>(entitlement-filtered registry list)<br/>+ user question"]
+    Prompt --> LLMCall["call_model role=planner<br/>via Model Gateway"]
+    LLMCall --> RawResponse["Raw response<br/>(may be markdown-fenced —<br/>observed empirically, not assumed)"]
+    RawResponse --> Strip["Defensive stripping:<br/>remove triple-backtick fence + json tag if present"]
+    Strip --> ParseValidate["json.loads + ToolPlan(**parsed)<br/>Pydantic validation"]
+    ParseValidate -->|invalid| PlanError["plan = {tool_calls: [], error: ...}"]
+    ParseValidate -->|valid| CheckEntitled["Each tool_name checked against<br/>available_tools from filter_tools_node<br/>— reject anything not in the entitled list"]
+    CheckEntitled --> Retriever[retriever_node]
+
+    Retriever --> Dispatch["TOOL_DISPATCH lookup<br/>(explicit allowlist in config.py,<br/>NOT dynamic string-based invocation —<br/>deliberate security trade-off)"]
+    Dispatch --> Parallel["asyncio.to_thread per call<br/>+ asyncio.gather<br/>— genuine concurrent execution"]
+    Parallel --> Combine["Results labeled by tool_name,<br/>joined into one retrieved_context string"]
+    Combine --> Analyst[analyst_node receives<br/>combined multi-tool context]
+
+    style Strip fill:#fff3cd
+    style CheckEntitled fill:#fff3cd
+    style Dispatch fill:#f8d7da
+    style Parallel fill:#d4edda
+```
+
 ## Build Phases
 
 - [x] Phase 0: Repository bootstrap, folder architecture, git branching/commit conventions, secrets strategy (`.env` / `.env.example`)
@@ -481,8 +525,8 @@ flowchart TD
 - [x] Phase 6b: Filtering/Access-Control Node — new `filter_tools_node`, graph entry point running before the planner, cross-checks the Phase 6a registry against Phase 5 entitlements per-role using the boolean `check_entitlement` (not the enforcing version), recomputed fresh every turn with no caching; testing surfaced a genuine entitlement seed-data gap (`market_data` granted to no role at all, correctly excluded even for admin) rather than a filtering bug
 - [x] Phase 6.5: Intent classifier — `intent_classifier_node` (read_only/write_action/mixed, ambiguous results default to the stricter `mixed`), corrected mid-build from an early full short-circuit to the proper draft-then-approve pattern
 - [x] Phase 6.6: HITL Approval Queue — real `identity.pending_approvals` table, entitlement-gated `/approvals` + `/approvals/{id}/decide` endpoints, dedicated role-gated reviewer UI, approval-triggered execution of the real `update_portfolio_allocation` write tool (via an explicitly temporary regex-based parameter extractor, pending structured planner output)
-- [ ] **[REPRIORITIZED — interview-timeline decision]** Structured planner output selecting from the tool registry (replaces free-text advisory planning) — NEXT
-- [ ] **[REPRIORITIZED]** Dynamic tool-call dispatch in the retriever + real Chroma-backed RAG
+- [x] **[REPRIORITIZED — DONE]** Structured planner output selecting from the tool registry — `ToolPlan`/`ToolCall` Pydantic schema, multi-tool parallel selection (not limited to one tool per turn), genuine concurrent dispatch via `asyncio.to_thread` + `asyncio.gather`, explicit `TOOL_DISPATCH` allowlist in `config.py` (not dynamic string-based invocation, a deliberate security trade-off), defensive markdown-fence stripping added after empirically observing the model ignore an explicit prompt instruction not to use markdown
+- [ ] **[REPRIORITIZED]** Dynamic tool-call dispatch in the retriever + real Chroma-backed RAG — NEXT
 - [ ] **[REPRIORITIZED]** Short/long-term conversation memory with vector DB integration
 - [ ] **[REPRIORITIZED]** EKS deployment, full depth (unchanged from original scope)
 - [ ] Everything else (further guardrails, caching, MinIO ingestion, exhaustive testing, remaining Well-Architected pillars, KG) — downgraded to design-level discussion only, not built, given interview timeline

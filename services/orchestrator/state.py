@@ -1,4 +1,5 @@
 from typing import TypedDict, Optional
+from pydantic import BaseModel
 
 class AgentState(TypedDict):
     user_message: str
@@ -14,3 +15,13 @@ class AgentState(TypedDict):
     retry_count: int
     final_response: Optional[str]
     escalated_to_human: bool
+
+class ToolCall(BaseModel):
+    tool_name: str
+    parameters: dict
+
+class ToolPlan(BaseModel):
+    tool_calls: list[ToolCall]
+
+
+

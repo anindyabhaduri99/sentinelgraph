@@ -43,7 +43,19 @@ def build_graph():
 
     graph.set_entry_point("filter_tools")
     graph.add_edge("filter_tools", "intent_classifier")
-    graph.add_edge("intent_classifier", "planner")
+    def should_continue_after_intent(state: AgentState) -> str:
+        if state["intent"] == "out_of_scope":
+            return "finalize"
+        return "planner"
+
+    graph.add_conditional_edges(
+        "intent_classifier",
+        should_continue_after_intent,
+        {
+            "planner": "planner",
+            "finalize": "finalize",
+        },
+    )
     graph.add_edge("planner", "retriever")
 
     def should_continue_after_retrieval(state: AgentState) -> str:

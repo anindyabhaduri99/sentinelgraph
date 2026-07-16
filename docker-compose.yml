@@ -83,6 +83,8 @@ services:
       LANGCHAIN_TRACING_V2: ${LANGCHAIN_TRACING_V2}
       LANGCHAIN_API_KEY: ${LANGCHAIN_API_KEY}
       LANGCHAIN_PROJECT: ${LANGCHAIN_PROJECT}
+      EXTERNAL_CRM_URL: http://external-crm:8200
+      EXTERNAL_CRM_API_KEY: ${EXTERNAL_CRM_API_KEY}
     ports:
       - "8090:8090"
     depends_on:
@@ -152,6 +154,15 @@ services:
     restart: unless-stopped
     ports:
       - "3004:80"
+
+  external-crm:
+    build: ./services/external_crm
+    container_name: sentinelgraph-external-crm
+    restart: unless-stopped
+    environment:
+      EXTERNAL_CRM_API_KEY: ${EXTERNAL_CRM_API_KEY}
+    ports:
+      - "8200:8200"
 
 volumes:
   postgres_data:
