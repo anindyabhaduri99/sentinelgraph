@@ -11,11 +11,14 @@ Why this exists (mimics AWS Bedrock):
 - Lets us swap providers/models/versions without touching any other service's code
 """
 
+import os
 from fastapi import FastAPI, HTTPException, Header, Depends
+from langchain_openai import OpenAIEmbeddings
 from pydantic import BaseModel
 from sqlalchemy import func
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
+from llama_index.embeddings.openai import OpenAIEmbedding
 
 from providers import get_anthropic_client, get_openai_client
 from router import resolve_model
@@ -60,6 +63,13 @@ class InvokeResponse(BaseModel):
     output_tokens: int
     cost_usd: float
 
+class EmbedRequest(BaseModel):
+    text: str
+
+class EmbedResponse(BaseModel):
+    embedding: list[float]
+    model: str
+
 
 def _log_usage(role: str, provider: str, model: str, input_tokens: int, output_tokens: int, cost_usd: float):
     session = SessionLocal()
@@ -77,9 +87,6 @@ def _log_usage(role: str, provider: str, model: str, input_tokens: int, output_t
         session.commit()
     finally:
         session.close()
-
-
-
 
 # -----------------------------------------------------------------------
 # The single unified endpoint. Every agent node in the orchestrator will
@@ -210,5 +217,20 @@ def get_usage():
         }
     finally:
         session.close()
+
+@app.post("/embed", response_model=EmbedResponse)
+def embed(req: EmbedRequest):
+    # Same pattern as /invoke: look up which model this role maps to,
+    # rather than hardcoding it here.
+    config = resolve_model("embedding")
+
+    embed_model = OpenAIEmbedding(
+        model=config["model"],
+        api_key=os.environ.get("OPENAI_API_KEY"),
+    )
+
+    vector = embed_model.get_text_embedding(req.text)
+    return EmbedResponse(embedding=vector, model=config["model"])
+
 
 

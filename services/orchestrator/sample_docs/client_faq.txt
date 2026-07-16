@@ -1,0 +1,13 @@
+Client Servicing FAQ (Fictional)
+
+Q: How do I request a portfolio rebalancing review?
+A: Submit a request through the client portal under "Portfolio Actions".
+Reviews are typically completed within 3 business days.
+
+Q: What is the process for disputing a trade execution?
+A: Contact client servicing within 48 hours of trade confirmation.
+Disputes are escalated to the trade operations team for review.
+
+Q: How are budget or allocation recommendations generated?
+A: Recommendations are AI-assisted, based on historical allocation
+performance, and reviewed by a human advisor before being finalized.

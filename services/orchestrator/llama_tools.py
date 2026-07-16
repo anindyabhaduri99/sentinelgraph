@@ -22,6 +22,7 @@ all here - only how the retriever finds and invokes them changes.
 from llama_index.core.tools import FunctionTool
 from repository import get_ticket, get_portfolio
 from external_apis_client import get_client_contact
+from rag_search import search_documents
 
 # Each FunctionTool wraps one of our existing functions. The "fn" is the
 # real Python function LlamaIndex will actually call when this tool is
@@ -48,8 +49,15 @@ get_client_contact_tool = FunctionTool.from_defaults(
     description="Retrieves a client's primary contact and escalation tier from the external CRM.",
 )
 
+search_documents_tool = FunctionTool.from_defaults(
+    fn=search_documents,
+    name="search_documents",
+    description="Searches internal compliance policies and client FAQ documents for relevant information.",
+)
+
 LLAMA_TOOL_REGISTRY = {
     "get_ticket": get_ticket_tool,
     "get_portfolio": get_portfolio_tool,
     "get_client_contact": get_client_contact_tool,
+    "search_documents": search_documents_tool,
 }

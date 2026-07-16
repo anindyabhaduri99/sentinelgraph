@@ -38,6 +38,10 @@ ROLE_CONFIG = {
         "provider": "anthropic",
         "model": "claude-haiku-4-5",
     },
+    "embedding": {
+        "provider": "openai",
+        "model": "text-embedding-3-small",
+    },
 }
 
 

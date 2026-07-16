@@ -10,3 +10,4 @@ pyyaml==6.0.2
 langsmith==0.1.147
 prometheus-fastapi-instrumentator==7.0.0
 pyjwt==2.9.0
+llama-index-embeddings-openai==0.2.5

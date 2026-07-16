@@ -1,0 +1,15 @@
+Internal Compliance Policy — AI-Assisted Recommendations (Fictional)
+
+Any AI-generated financial recommendation exceeding $5,000 in notional
+value must be routed to human-in-the-loop review before being presented
+to a client.
+
+All AI-assisted responses must include a disclaimer identifying the
+content as AI-generated and subject to human oversight.
+
+Confidence scores below 0.9 on the internal evaluator model require
+mandatory escalation; the system may not auto-respond in these cases.
+
+All requests, agent decisions, tool invocations, and responses must be
+logged to the immutable audit store for a minimum retention period of
+7 years, per recordkeeping requirements.
