@@ -9,3 +9,7 @@ venv/
 .idea/
 .vscode/
 node_modules/
+infra/aws/terraform/.terraform/
+infra/aws/terraform/*.tfstate
+infra/aws/terraform/*.tfstate.backup
+infra/aws/terraform/.terraform.lock.hcl
